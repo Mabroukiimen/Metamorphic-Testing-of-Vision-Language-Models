@@ -1,0 +1,78 @@
+vlm:
+  model_name: "llava_v15"
+  backend: "cli"
+  vlm_root: "/home/ubuntu/LLaVA"
+  python_cmd: "/home/ubuntu/miniconda3/envs/llava/bin/python"
+  caption_prompt: "Describe this image in one sentence."
+
+sts:
+  model_name: "sentence-transformers/all-MiniLM-L6-v2"
+
+ga:
+  population_size: 10
+  max_num_iteration: 10
+  mutation_probability: 0.2
+  elit_ratio: 0.05
+  crossover_probability: 0.5
+  parents_portion: 0.3
+  crossover_type: "uniform"
+  max_iteration_without_improv: 10
+  maxfixgen: 6
+
+transformations:
+  # Fixed layout (decoded by Utils/vector_layout.py)
+  var_bound:
+    # ---- SP flags + params ----
+    - [0, 1]           # 0  b_bright
+    - [0.8, 1.2]       # 1  bright_factor
+    - [0, 1]           # 2  b_blur
+    - [0.0, 2.0]       # 3  blur_radius
+    - [0, 1]           # 4  b_rotate
+    - [-15.0, 15.0]    # 5  rot_angle
+    - [0, 1]           # 6  b_translate
+    - [-40, 40]        # 7  tx
+    - [-40, 40]        # 8  ty
+
+    # ---- SA selector + params ----
+    - [0, 3]           # 9  sa_type (0 none, 1 insert, 2 remove, 3 replace)
+    - [0, 30]          # 10 target_det_idx (clip to K-1); used in remove/replace
+    - [0, 999999]      # 11 ins_corpus_id (clip to N-1) #number of objects in the corpus, it could continue to grow so we set it to a big number here and it's handled later in the code min(corpus_size-1, int(value))
+    - [0.20, 0.35]     # 12 ins_scale
+    - [0, 999999]      # 13 rep_corpus_id (clip to N-1)
+    - [0.20, 0.50]     # 14 rep_scale   #in the code I suggested we scale relative to bbox
+
+  layout:
+    - {index: 0,  name: "b_bright",      type: "int"}
+    - {index: 1,  name: "bright_factor", type: "float"}
+    - {index: 2,  name: "b_blur",        type: "int"}
+    - {index: 3,  name: "blur_radius",   type: "float"}
+    - {index: 4,  name: "b_rotate",      type: "int"}
+    - {index: 5,  name: "rot_angle",     type: "float"}
+    - {index: 6,  name: "b_translate",   type: "int"}
+    - {index: 7,  name: "tx",            type: "int"}
+    - {index: 8,  name: "ty",            type: "int"}
+
+    - {index: 9,  name: "sa_type",       type: "int"}
+    - {index: 10, name: "target_det_idx",type: "int"}
+    - {index: 11, name: "ins_corpus_id", type: "int"}
+    - {index: 12, name: "ins_scale",     type: "float"}
+    - {index: 13, name: "rep_corpus_id", type: "int"}
+    - {index: 14, name: "rep_scale",     type: "float"}
+
+paths:
+  base_images_meta: "config/base_tests_with_captions.json"
+  ga_log_path: "logs/ga_llava.jsonl"
+  tmp_root: "."
+  object_corpus_dir: "/home/ubuntu/segment-anything/object_corpus"
+  transformed_dir: "logs/transformed_images"
+
+thresholds:
+  psnr_min: 20.0
+  yolo_topk: 10
+  yolo_conf: 0.25
+  sts: 0.27
+
+llm:
+  model_url: "https://router.huggingface.co/v1/chat/completions"
+  api_key_env: "HF_TOKEN"
+  judge_model: "meta-llama/Llama-3.1-8B-Instruct"
