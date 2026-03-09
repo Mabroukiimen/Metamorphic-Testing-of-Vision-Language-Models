@@ -1,44 +1,55 @@
-from dataclasses import dataclass
 from pathlib import Path
-import json
 from PIL import Image
+import json
 
-@dataclass
-class CorpusItem:
-    corpus_id: int
-    class_id: int
-    class_name: str
-    obj_img: Image.Image  # RGBA preferred
-    meta: dict
-
-def _id_to_dir(root: Path, corpus_id: int) -> Path:
-    # supports either "000123" folders or "123"
-    p1 = root / f"{corpus_id:06d}"
-    if p1.exists():
-        return p1
-    p2 = root / str(corpus_id)
-    return p2
-
-def load_corpus_item(corpus_dir: str, corpus_id: int) -> CorpusItem:
+def _get_object_dirs(corpus_dir: str):
     root = Path(corpus_dir)
-    d = _id_to_dir(root, corpus_id)
-    meta_path = d / "meta.json"
-    obj_path = d / "obj.png"
 
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    img = Image.open(obj_path)
-    if img.mode != "RGBA":
-        img = img.convert("RGBA")
+    # support both:
+    # object_corpus/objects/00000000/
+    # or directly object_corpus/00000000/
+    objects_root = root / "objects"
+    base = objects_root if objects_root.exists() else root
 
-    return CorpusItem(
-        corpus_id=int(meta.get("corpus_id", corpus_id)),
-        class_id=int(meta.get("class_id", -1)),
-        class_name=str(meta.get("class_name", "UNKNOWN")),
-        obj_img=img,
-        meta=meta,
-    )
+    dirs = sorted([p for p in base.iterdir() if p.is_dir()])
+    return dirs
 
 def corpus_size(corpus_dir: str) -> int:
-    root = Path(corpus_dir)
-    # count folders that contain meta.json
-    return sum(1 for p in root.iterdir() if p.is_dir() and (p / "meta.json").exists())
+    return len(_get_object_dirs(corpus_dir))
+
+def load_corpus_item(corpus_dir: str, idx: int) -> Image.Image:
+    dirs = _get_object_dirs(corpus_dir)
+    if not (0 <= idx < len(dirs)):
+        raise IndexError(f"Corpus idx {idx} out of range, size={len(dirs)}")
+
+    obj_dir = dirs[idx]
+    img_path = obj_dir / "obj.png"
+    if not img_path.exists():
+        raise FileNotFoundError(f"Missing obj.png in {obj_dir}")
+
+    return Image.open(img_path).convert("RGB")
+
+def load_corpus_mask(corpus_dir: str, idx: int):
+    dirs = _get_object_dirs(corpus_dir)
+    if not (0 <= idx < len(dirs)):
+        raise IndexError(f"Corpus idx {idx} out of range, size={len(dirs)}")
+
+    obj_dir = dirs[idx]
+    mask_path = obj_dir / "mask.png"
+    if not mask_path.exists():
+        raise FileNotFoundError(f"Missing mask.png in {obj_dir}")
+
+    return Image.open(mask_path).convert("L")
+
+def load_corpus_meta(corpus_dir: str, idx: int):
+    dirs = _get_object_dirs(corpus_dir)
+    if not (0 <= idx < len(dirs)):
+        raise IndexError(f"Corpus idx {idx} out of range, size={len(dirs)}")
+
+    obj_dir = dirs[idx]
+    meta_path = obj_dir / "meta.json"
+    if not meta_path.exists():
+        return {}
+
+    with open(meta_path, "r", encoding="utf-8") as f:
+        return json.load(f)

@@ -26,8 +26,10 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
 
     vlm_runner = kwargs["vlm_runner"]
     sts = kwargs["sts_scorer"]
-    #yolo = kwargs["yolo_detector"]
-    #sam  = kwargs["sam_segmenter"]
+    
+    yolo = kwargs["yolo_detector"]
+    sam  = kwargs["sam_segmenter"]
+    lama = kwargs.get("lama_inpainter", None)
 
     # Dict[str, Any] = kwargs.setdefault("cache", {})
     cache: Dict[str, Any] = kwargs["cache"]
@@ -65,10 +67,9 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     sp_img = decoder.apply_geometric(px_img, v)
 
     # SA selector
-    #sa_type = int(round(v[Vec.SA_TYPE]))  # 0..3
-    #sa_type = max(0, min(3, sa_type))
+    sa_type = int(round(v[Vec.SA_TYPE]))  # 0..3
     
-    sa_type = 0  # TEMP: run SP-only (no YOLO/SAM/LLM judge)
+    #sa_type = 0  # TEMP: run SP-only (no YOLO/SAM/LLM judge)
 
     # prepare logging shell
     eval_idx = cache.get("eval_idx", 0)
@@ -128,7 +129,7 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         return 1e6
 
     # clip target_det_idx
-    target_gene = int(round(v[Vec.TARGET_DET_IDX]))    #TARGET_DET_IDX is the gene in the GA vector that tells the system which detected object to choose from YOLO’s detections.
+    target_gene = int(round(v[Vec.TARGET_DET_IDX]))    #TARGET_DET_IDX is the gene in the GA vector that tells the system which detected object to choose from YOLO’s detections, in case of removal or replacement.
     if len(dets) > 0:
         chosen_idx = min(max(0, target_gene), len(dets) - 1)
     else:
@@ -141,13 +142,26 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         if not (0 <= idx < N):
             raise ValueError(f"Corpus index out of range: {idx}, corpus size={N}")
         return idx
+    
+    ins_id = None
+    rep_id = None
+    ins_scale = None
+    rep_scale = None
+    
+    if sa_type == 1:
+        ins_id = corpus_id(v[Vec.INS_CORPUS_ID])
+        ins_scale = float(v[Vec.INS_SCALE])
+    elif sa_type == 3:
+        rep_id = corpus_id(v[Vec.REP_CORPUS_ID])
+        rep_scale = float(v[Vec.REP_SCALE])
+        
+    lama = kwargs.get("lama_inpainter", None)
 
+    if sa_type == 2:   # removal
+        if lama is None:
+            raise ValueError("lama_inpainter is required for removal")
+    # use lama here
 
-    ins_id = corpus_id(v[Vec.INS_CORPUS_ID])
-    rep_id = corpus_id(v[Vec.REP_CORPUS_ID])
-
-    ins_scale = float(v[Vec.INS_SCALE])
-    rep_scale = float(v[Vec.REP_SCALE])
 
     final_img, sa_log = apply_sa(
         img_sp=sp_img,
@@ -155,6 +169,7 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         yolo_dets=dets,
         chosen_idx=chosen_idx,
         sam_segmenter=sam,
+        lama_inpainter=lama,
         object_corpus_dir=paths["object_corpus_dir"],
         ins_corpus_id=ins_id,
         ins_scale=ins_scale,

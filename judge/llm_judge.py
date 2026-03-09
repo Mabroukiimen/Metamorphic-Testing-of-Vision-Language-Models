@@ -35,7 +35,7 @@ Transformed caption:
 
 Return ONLY valid JSON (no markdown, no extra text) with this schema:
 {{
-  "score_1_to_5": 1,
+  "score_1_to_5": 2.5,  # float, 1=worst, 5=best; for SP transform, higher is better; for MR with object change, 1 means the change is fully reflected in the caption and 5 means the change is not reflected at all; partial reflection can be scored in between
   "is_failure": true,
   "failure_types": ["omission"],
   "explanation": "..."
@@ -65,5 +65,5 @@ def judge_score_row(row: Dict[str, Any], llm_cfg: Dict[str, Any]) -> Tuple[float
     prompt = build_prompt(row)
     out = call_hf(model_url, api_key, prompt, model_id)
     score = float(out.get("score_1_to_5", 3))
-    norm = normalize_1_to_5(score)
-    return score, norm, out
+    norm_wrongness= normalize_1_to_5(score)  # 0=correct, 1=wrong
+    return score, norm_wrongness, out

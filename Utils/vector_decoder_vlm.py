@@ -1,6 +1,7 @@
 from typing import Sequence
 from PIL import Image
 from transformations.transformer_sp_vlm import SPTransformer
+from transformations.transformer_sa_vlm import apply_sa
 
 class VectorDecoderVLM:
     def __init__(self, image: Image.Image):

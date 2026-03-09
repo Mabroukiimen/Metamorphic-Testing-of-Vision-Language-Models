@@ -14,8 +14,8 @@ class Vec:
     TY = 8
 
     SA_TYPE = 9
-    TARGET_DET_IDX = 10
-    INS_CORPUS_ID = 11
-    INS_SCALE = 12
+    INS_CORPUS_ID = 10
+    INS_SCALE = 11
+    TARGET_DET_IDX = 12
     REP_CORPUS_ID = 13
     REP_SCALE = 14
