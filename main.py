@@ -43,8 +43,8 @@ def main(cfg_path: str):
 )
     
     lama_inpainter = LaMaInpainter(
-    config_path="/path/to/lama/config.yaml",
-    checkpoint_path="/path/to/lama/models/best.ckpt",
+    config_path="/home/ubuntu/lama/big-lama/config.yaml",
+    checkpoint_path="/home/ubuntu/lama/big-lama/models/best.ckpt",
     device="cuda",
 )
 

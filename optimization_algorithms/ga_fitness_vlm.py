@@ -67,7 +67,8 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     sp_img = decoder.apply_geometric(px_img, v)
 
     # SA selector
-    sa_type = int(round(v[Vec.SA_TYPE]))  # 0..3
+    sa_type = int(round(v[Vec.SA_TYPE]))
+    sa_type = max(0, min(3, sa_type))
     
     #sa_type = 0  # TEMP: run SP-only (no YOLO/SAM/LLM judge)
 
@@ -137,6 +138,10 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
 
     # clip corpus ids to corpus size
     N = corpus_size(paths["object_corpus_dir"])
+    
+    if sa_type in (1, 3) and N == 0:
+        return 1e6
+    
     def corpus_id(x: float) -> int:
         idx = int(round(x))
         if not (0 <= idx < N):
@@ -155,13 +160,11 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         rep_id = corpus_id(v[Vec.REP_CORPUS_ID])
         rep_scale = float(v[Vec.REP_SCALE])
         
-    lama = kwargs.get("lama_inpainter", None)
-
-    if sa_type == 2:   # removal
+    
+    if sa_type in (2, 3):   # removal or replacement
         if lama is None:
-            raise ValueError("lama_inpainter is required for removal")
-    # use lama here
-
+            raise ValueError("lama_inpainter is required for removal/replacement")
+    
 
     final_img, sa_log = apply_sa(
         img_sp=sp_img,
@@ -180,8 +183,8 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
 
     tmp_path = out_dir / f"img{image_id}_eval{eval_idx:04d}_sa{sa_type}.png"
     final_img.save(tmp_path)
-    trf_caption = vlm_runner.caption(str(tmp_path), prompt=cfg["vlm"]["caption_prompt"])
-    record["transformed_image_path"] = str(tmp_path)
+    trf_caption = vlm_runner.caption(str(tmp_path.resolve()), prompt=cfg["vlm"]["caption_prompt"])
+    record["transformed_image_path"] = str(tmp_path.resolve())
     record["transformed_caption"] = trf_caption
 
     # LLM judge score
@@ -189,6 +192,7 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     record["llm_judge"] = label
     record["llm_score_1_to_5"] = score_1_5
     record["llm_score_norm_0_1"] = norm
+    record["sa"]["chosen_idx"] = int(chosen_idx)
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as f:

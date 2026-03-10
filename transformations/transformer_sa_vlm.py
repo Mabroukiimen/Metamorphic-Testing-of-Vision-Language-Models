@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 from PIL import Image
 
-from Utils.corpus import load_corpus_item  # you may need to create this helper
+from Utils.corpus import load_corpus_item, load_corpus_mask
 
 
 def pil_to_bgr(img: Image.Image):
@@ -79,23 +79,22 @@ def apply_insert(
     ins_corpus_id: int,
     ins_scale: float,
 ):
+    # load pre-cut object and its mask directly from the corpus
     corpus_img_pil = load_corpus_item(object_corpus_dir, ins_corpus_id)
-    corpus_bgr = pil_to_bgr(corpus_img_pil)
+    corpus_mask_pil = load_corpus_mask(object_corpus_dir, ins_corpus_id)
 
-    corpus_dets = sam_segmenter.yolo.detect_topk(corpus_img_pil, topk=1)  # or another helper
-    if len(corpus_dets) == 0:
-        raise ValueError("No object detected in corpus item")
+    obj_crop = pil_to_bgr(corpus_img_pil)
+    obj_mask = (np.array(corpus_mask_pil) > 0).astype(np.uint8)
 
-    src_det = corpus_dets[0]
-    src_mask = segment_from_box(sam_segmenter, corpus_img_pil, src_det.bbox_xyxy)
-    obj_crop, obj_mask, src_bbox = extract_object_from_mask(corpus_bgr, src_mask)
+    if ins_scale is None or ins_scale <= 0:
+        raise ValueError(f"Invalid ins_scale: {ins_scale}")
 
     h, w = obj_crop.shape[:2]
     new_w = max(1, int(w * ins_scale))
     new_h = max(1, int(h * ins_scale))
 
     obj_crop = cv2.resize(obj_crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-    obj_mask = cv2.resize(obj_mask.astype(np.uint8), (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+    obj_mask = cv2.resize(obj_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
 
     bg_bgr = pil_to_bgr(img_sp)
     ins_x, ins_y = choose_insertion_xy(bg_bgr, yolo_dets)
@@ -103,10 +102,10 @@ def apply_insert(
 
     log = {
         "sa_type": 1,
-        "inserted_corpus_id": ins_corpus_id,
+        "inserted_corpus_id": int(ins_corpus_id),
         "insert_scale": float(ins_scale),
         "insert_position": [int(ins_x), int(ins_y)],
-        "source_bbox": src_bbox,
+        "inserted_mask_area": int(obj_mask.sum()),
     }
     return bgr_to_pil(out_bgr), log
 
@@ -137,6 +136,78 @@ def apply_remove(
     }
     return bgr_to_pil(out_bgr), log
 
+def apply_replace(
+    img_sp: Image.Image,
+    yolo_dets,
+    chosen_idx: int,
+    sam_segmenter,
+    lama_inpainter,
+    object_corpus_dir: str,
+    rep_corpus_id: int,
+    rep_scale: float,
+):
+    if len(yolo_dets) == 0:
+        raise ValueError("No detections for replacement")
+
+    chosen_idx = clip_idx(chosen_idx, len(yolo_dets))
+    det = yolo_dets[chosen_idx]
+
+    # target object in original image
+    target_mask = segment_from_box(sam_segmenter, img_sp, det.bbox_xyxy)
+    img_bgr = pil_to_bgr(img_sp)
+
+    # remove target object first
+    removed_bgr = lama_inpainter.inpaint(img_bgr, target_mask)
+
+    # load replacement object from corpus
+    corpus_img_pil = load_corpus_item(object_corpus_dir, rep_corpus_id)
+    corpus_mask_pil = load_corpus_mask(object_corpus_dir, rep_corpus_id)
+
+    obj_crop = pil_to_bgr(corpus_img_pil)
+    obj_mask = (np.array(corpus_mask_pil) > 0).astype(np.uint8)
+
+    if rep_scale is None or rep_scale <= 0:
+        raise ValueError(f"Invalid rep_scale: {rep_scale}")
+
+    # scale relative to target bbox
+    x1, y1, x2, y2 = det.bbox_xyxy
+    target_w = max(1, x2 - x1)
+    target_h = max(1, y2 - y1)
+
+    base_size = max(target_w, target_h)
+    h, w = obj_crop.shape[:2]
+
+    if h == 0 or w == 0:
+        raise ValueError("Replacement object has invalid size")
+
+    long_side = max(h, w)
+    scale_factor = (base_size * rep_scale) / long_side
+
+    new_w = max(1, int(w * scale_factor))
+    new_h = max(1, int(h * scale_factor))
+
+    obj_crop = cv2.resize(obj_crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    obj_mask = cv2.resize(obj_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+
+    # place replacement near center of removed target bbox
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+    paste_x = int(cx - new_w // 2)
+    paste_y = int(cy - new_h // 2)
+
+    out_bgr = paste_object(removed_bgr, obj_crop, obj_mask, paste_x, paste_y)
+
+    log = {
+        "sa_type": 3,
+        "target_det_idx": int(chosen_idx),
+        "replaced_bbox": list(map(int, det.bbox_xyxy)),
+        "replaced_cls_name": det.cls_name,
+        "replacement_corpus_id": int(rep_corpus_id),
+        "replacement_scale": float(rep_scale),
+        "replacement_position": [int(paste_x), int(paste_y)],
+        "replacement_mask_area": int(obj_mask.sum()),
+    }
+    return bgr_to_pil(out_bgr), log
 
 def apply_sa(
     img_sp: Image.Image,
@@ -173,4 +244,16 @@ def apply_sa(
             lama_inpainter=lama_inpainter,
         )
 
-    raise NotImplementedError("Replace not added yet")
+    if sa_type == 3:
+        return apply_replace(
+            img_sp=img_sp,
+            yolo_dets=yolo_dets,
+            chosen_idx=chosen_idx,
+            sam_segmenter=sam_segmenter,
+            lama_inpainter=lama_inpainter,
+            object_corpus_dir=object_corpus_dir,
+            rep_corpus_id=rep_corpus_id,
+            rep_scale=rep_scale,
+        )
+
+    raise ValueError(f"Unsupported sa_type: {sa_type}")

@@ -1,4 +1,3 @@
-from typing import Optional
 import cv2
 import numpy as np
 import torch
@@ -30,11 +29,6 @@ class LaMaInpainter:
         self.model.to(device)
 
     def inpaint(self, img_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """
-        img_bgr: HxWx3 uint8
-        mask: HxW uint8, values 0/1 or 0/255
-        returns: HxWx3 uint8 BGR
-        """
         if mask.dtype != np.uint8:
             mask = mask.astype(np.uint8)
 
