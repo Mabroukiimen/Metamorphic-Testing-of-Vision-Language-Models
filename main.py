@@ -5,7 +5,8 @@ import sys
 sys.path.insert(0, "/home/ubuntu/lama")
 
 from Models.sts_scorer import STSScorer
-from Models.llava_runner import VLMRunner
+#from Models.llava_runner import VLMRunner
+from Models.vlm_runner import VLMRunner
 # from Models.blip_runner import BLIPRunner
 
 from perception.yolo_detector import YOLODetector
@@ -30,10 +31,11 @@ def main(cfg_path: str):
 
     sts = STSScorer(cfg["sts"]["model_name"])
     vlm = VLMRunner(
-        model_name=cfg["vlm"]["model_name"],
-        vlm_root=cfg["vlm"]["vlm_root"],
-        python_cmd=cfg["vlm"]["python_cmd"],
-    )
+    model_name=cfg["vlm"]["model_name"],
+    vlm_root=cfg["vlm"]["vlm_root"],
+    python_cmd=cfg["vlm"]["python_cmd"],
+    script_path=cfg["vlm"].get("script_path"),
+)
 
     yolo = YOLODetector(model_path="yolov8l.pt", conf_thres=cfg["thresholds"].get("yolo_conf", 0.25))
     sam_segmenter = SAMSegmenter(

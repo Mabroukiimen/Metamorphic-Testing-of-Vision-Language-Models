@@ -34,12 +34,12 @@ transformations:
     - [-40, 40]        # 8  ty
 
     # ---- SA selector + params ----
-    - [0, 3]           # 9  sa_type (0 none, 1 insert, 2 remove, 3 replace)
+    - [0, 4]           # 9  sa_type (0 none, 1 insert, 2 remove, 3 replace)
     - [0, 79]      # 10 ins_corpus_id (clip to N-1) #number of objects in the corpus, it could continue to grow so we set it to a big number here and it's handled later in the code min(corpus_size-1, int(value))
-    - [0.20, 0.35]     # 11 ins_scale
+    - [0.5, 1.2]     # 11 ins_scale
     - [0, 30]          # 12 target_det_idx (clip to K-1); used in remove/replace
     - [0, 79]      # 13 rep_corpus_id (clip to N-1)
-    - [0.20, 0.50]     # 14 rep_scale   #in the code I suggested we scale relative to bbox
+    - [0.5, 1.0]     # 14 rep_scale   #in the code I suggested we scale relative to bbox
 
   layout:
     - {index: 0,  name: "b_bright",      type: "int"}

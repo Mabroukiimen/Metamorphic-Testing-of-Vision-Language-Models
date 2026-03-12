@@ -33,29 +33,3 @@ def run_ga(cfg, **kwargs_from_main):
     ga.run()
     return {"best_variable": ga.best_variable, "best_function": ga.best_function}
 
-    # Fitness wrapper: GA passes numpy array x
-    def f(x: np.ndarray) -> float:
-        return float(vlm_mt_fitness(x, cfg=cfg, **kwargs))
-
-    # vector contains mixed int/float genes, but the library can still operate in 'real'
-    # We will round discrete ones inside fitness/decoders (b_* flags, sa_type, indices).
-    model = ga(
-        function=f,
-        dimension=dim,
-        variable_type="real",
-        variable_boundaries=var_bound,
-        algorithm_parameters=algorithm_parameters,
-    )
-
-    model.run()
-
-    # model.output_dict typically contains best solution and function value
-    out = getattr(model, "output_dict", None)
-    if out is None:
-        # fallback
-        out = {
-            "variable": getattr(model, "best_variable", None),
-            "function": getattr(model, "best_function", None),
-        }
-
-    return out

@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 from PIL import Image
 
-from Utils.corpus import load_corpus_item, load_corpus_mask
+from Utils.corpus import load_corpus_item, load_corpus_mask, load_corpus_meta
 
 
 def pil_to_bgr(img: Image.Image):
@@ -61,14 +61,68 @@ def paste_object(background, obj_crop, obj_mask, x, y):
     return bg
 
 
-def choose_insertion_xy(img_bgr, yolo_dets):
+def choose_insertion_xy(img_bgr, yolo_dets, obj_w, obj_h, max_iou=0.15):
     H, W = img_bgr.shape[:2]
-    if len(yolo_dets) == 0:
-        return W // 3, H // 3
 
-    det = yolo_dets[0]
-    x1, y1, x2, y2 = det.bbox_xyxy
-    return int(x2 + 10), int(y1)
+    candidate_positions = []
+
+    if len(yolo_dets) > 0:
+        for det in yolo_dets:
+            x1, y1, x2, y2 = det.bbox_xyxy
+
+            candidate_positions.extend([
+                (int(x2 + 10), int(y1)),              # right
+                (int(x1 - obj_w - 10), int(y1)),      # left
+                (int(x1), int(y2 + 10)),              # below
+                (int(x1), int(y1 - obj_h - 10)),      # above
+            ])
+
+    candidate_positions.extend([
+        (W // 3, H // 3),
+        (W // 2, H // 2),
+        (max(0, W - obj_w - 20), max(0, H - obj_h - 20)),
+    ])
+
+    for x, y in candidate_positions:
+        x = max(0, min(x, W - obj_w))
+        y = max(0, min(y, H - obj_h))
+
+        insert_box = [x, y, x + obj_w, y + obj_h]
+
+        if not too_much_overlap(insert_box, yolo_dets, max_iou=max_iou):
+            return x, y
+
+    # fallback if all candidates overlap too much
+    x = max(0, min(W // 3, W - obj_w))
+    y = max(0, min(H // 3, H - obj_h))
+    return x, y
+
+
+def box_iou_xyxy(box1, box2):
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+
+    inter_w = max(0, x2 - x1)
+    inter_h = max(0, y2 - y1)
+    inter = inter_w * inter_h
+
+    area1 = max(0, box1[2] - box1[0]) * max(0, box1[3] - box1[1])
+    area2 = max(0, box2[2] - box2[0]) * max(0, box2[3] - box2[1])
+
+    union = area1 + area2 - inter
+    if union <= 0:
+        return 0.0
+    return inter / union
+
+
+def too_much_overlap(insert_box, yolo_dets, max_iou=0.15):
+    for det in yolo_dets:
+        det_box = det.bbox_xyxy
+        if box_iou_xyxy(insert_box, det_box) > max_iou:
+            return True
+    return False
 
 
 def apply_insert(
@@ -82,9 +136,11 @@ def apply_insert(
     # load pre-cut object and its mask directly from the corpus
     corpus_img_pil = load_corpus_item(object_corpus_dir, ins_corpus_id)
     corpus_mask_pil = load_corpus_mask(object_corpus_dir, ins_corpus_id)
+    corpus_meta = load_corpus_meta(object_corpus_dir, ins_corpus_id)
 
     obj_crop = pil_to_bgr(corpus_img_pil)
     obj_mask = (np.array(corpus_mask_pil) > 0).astype(np.uint8)
+    inserted_class_name = corpus_meta.get("class_name", "unknown")
 
     if ins_scale is None or ins_scale <= 0:
         raise ValueError(f"Invalid ins_scale: {ins_scale}")
@@ -97,15 +153,24 @@ def apply_insert(
     obj_mask = cv2.resize(obj_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
 
     bg_bgr = pil_to_bgr(img_sp)
-    ins_x, ins_y = choose_insertion_xy(bg_bgr, yolo_dets)
+    
+    ins_x, ins_y = choose_insertion_xy(
+        bg_bgr,
+        yolo_dets,
+        obj_w=new_w,
+        obj_h=new_h,
+        max_iou=0.15,
+    )
     out_bgr = paste_object(bg_bgr, obj_crop, obj_mask, ins_x, ins_y)
 
     log = {
         "sa_type": 1,
         "inserted_corpus_id": int(ins_corpus_id),
+        "inserted_class_name": inserted_class_name,
         "insert_scale": float(ins_scale),
         "insert_position": [int(ins_x), int(ins_y)],
         "inserted_mask_area": int(obj_mask.sum()),
+    
     }
     return bgr_to_pil(out_bgr), log
 
@@ -162,9 +227,11 @@ def apply_replace(
     # load replacement object from corpus
     corpus_img_pil = load_corpus_item(object_corpus_dir, rep_corpus_id)
     corpus_mask_pil = load_corpus_mask(object_corpus_dir, rep_corpus_id)
+    corpus_meta = load_corpus_meta(object_corpus_dir, rep_corpus_id)
 
     obj_crop = pil_to_bgr(corpus_img_pil)
     obj_mask = (np.array(corpus_mask_pil) > 0).astype(np.uint8)
+    replacement_class_name = corpus_meta.get("class_name", "unknown")
 
     if rep_scale is None or rep_scale <= 0:
         raise ValueError(f"Invalid rep_scale: {rep_scale}")
@@ -203,6 +270,7 @@ def apply_replace(
         "replaced_bbox": list(map(int, det.bbox_xyxy)),
         "replaced_cls_name": det.cls_name,
         "replacement_corpus_id": int(rep_corpus_id),
+        "replacement_class_name": replacement_class_name,
         "replacement_scale": float(rep_scale),
         "replacement_position": [int(paste_x), int(paste_y)],
         "replacement_mask_area": int(obj_mask.sum()),

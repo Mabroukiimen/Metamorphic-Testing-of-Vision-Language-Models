@@ -43,6 +43,14 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         cache["base_img"] = Image.open(base_image_path).convert("RGB")
     base_img = cache["base_img"]
     
+    topk = int(thr.get("yolo_topk", 10))
+    
+    if "base_yolo_dets" not in cache:
+        cache["base_yolo_dets"] = yolo.detect_topk(base_img, topk=topk)
+        
+    base_yolo_dets = cache["base_yolo_dets"]
+    base_object_classes = sorted(list({d.cls_name for d in base_yolo_dets}))
+    
 
     # cache base caption
     if "base_caption" not in cache:
@@ -75,12 +83,16 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     # prepare logging shell
     eval_idx = cache.get("eval_idx", 0)
     cache["eval_idx"] = eval_idx + 1
-
+    
+    
+    
+    #logs
     record: Dict[str, Any] = {
         "image": base_image_path,
         "image_id": image_id,
         "vector": list(map(float, v)),
         "base_caption": base_caption,
+        "base_image_object_classes": base_object_classes,
         "psnr_pixel": psnr_val,
         "sp": {
             "b_bright": int(round(v[Vec.B_BRIGHT])),
@@ -104,9 +116,9 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         print(f"\n[EVAL {eval_idx:04d}] saved: {tmp_path.resolve()}")
         print(f"[EVAL {eval_idx:04d}] vector: {list(map(float, v))}")
         trf_caption = vlm_runner.caption(str(tmp_path.resolve()), prompt=cfg["vlm"]["caption_prompt"])
-        print("transformed caption", trf_caption)
+        print("transformed caption:", trf_caption)
         dist = sts.distance(base_caption, trf_caption)
-        record["transformed_image_path"] = str(tmp_path)
+        record["transformed_image_path"] = str(tmp_path.resolve())
         record["transformed_caption"] = trf_caption
         record["sts_distance"] = float(dist)
 
@@ -118,7 +130,6 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         return -float(dist)
 
     # ---- SA path ----
-    topk = int(thr.get("yolo_topk", 10))
     dets = yolo.detect_topk(sp_img, topk=topk)
     record["sa"]["yolo_topk"] = [
         {"cls_id": d.cls_id, "cls_name": d.cls_name, "conf": d.conf, "bbox_xyxy": list(d.bbox_xyxy)}
@@ -144,9 +155,7 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     
     def corpus_id(x: float) -> int:
         idx = int(round(x))
-        if not (0 <= idx < N):
-            raise ValueError(f"Corpus index out of range: {idx}, corpus size={N}")
-        return idx
+        return min(max(0, idx), N - 1)
     
     ins_id = None
     rep_id = None
@@ -186,6 +195,7 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     trf_caption = vlm_runner.caption(str(tmp_path.resolve()), prompt=cfg["vlm"]["caption_prompt"])
     record["transformed_image_path"] = str(tmp_path.resolve())
     record["transformed_caption"] = trf_caption
+    print("Transformed caption:", trf_caption)
 
     # LLM judge score
     score_1_5, norm, label = judge_score_row(record, llm_cfg)
