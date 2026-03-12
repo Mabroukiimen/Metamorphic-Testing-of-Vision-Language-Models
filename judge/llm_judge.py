@@ -59,6 +59,23 @@ Metamorphic relation applied:
 Expected semantic change:
 - {expected_change_text}
 
+Object-class interpretation rules:
+
+The object class names come from an object detector (COCO-style categories).
+These categories are coarse labels.
+
+Examples:
+- "person" may appear in captions as: man, woman, child, boy, girl, people, person.
+- "car" may appear as: vehicle, automobile, sedan, truck.
+- "bowl" may appear as: dish, plate, container.
+
+When evaluating captions:
+- Treat specific descriptions as valid instances of the broader class.
+- Do NOT mark it as misclassification if the caption uses a more specific description of the same class.
+
+Example:
+If the expected class is "person", captions mentioning "woman", "man", "girl", or "boy" are correct.
+
 Base image detected object classes:
 - {base_object_classes}
 
@@ -72,6 +89,8 @@ Transformed caption:
 \"\"\"{trf_cap}\"\"\"
 
 Decide whether the transformed caption is a FAILURE under the MR.
+Use semantic reasoning rather than exact word matching.
+Judge based on meaning, not literal class label equality.
 
 Use these failure types:
 - omission
@@ -85,7 +104,7 @@ Guidance:
 - omission: the expected inserted/replaced object was not mentioned in the transformed caption
 - misclassification: the object is mentioned but with the wrong class
 - quantity: the count/number is wrong
-- hallucination: an unsupported object or attribute appears; in particular, if the transformed caption mentions an object class not present in the base-image object list and not explicitly allowed by the MR
+- hallucination: an unsupported object or attribute appears; in particular, if the transformed caption mentions an object class not present in the base-image object list and that was not explicitly inserted or introduced by replacement under the metamorphic relation, then classify this as hallucination, unless it is clearly just a paraphrase, near-synonym, subtype or natural description of an existing object.
 - substitution: the caption swaps one object/class for another incorrect one
 - no-change: the caption stays essentially unchanged when a semantic change was expected
 

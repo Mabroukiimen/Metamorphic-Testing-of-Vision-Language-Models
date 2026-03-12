@@ -15,6 +15,8 @@ from perception.sam_segmenter import SAMSegmenter
 from optimization_algorithms.genetic_algorithm.geneticalgorithm import geneticalgorithm
 from optimization_algorithms.ga_driver import run_ga
 
+from optimization_algorithms.pso_driver import run_pso
+
 from perception.lama_inpainter import LaMaInpainter
 
 def load_base_tests(meta_path: str):
@@ -50,7 +52,9 @@ def main(cfg_path: str):
     device="cuda",
 )
 
-    run_ga(
+    optimizer_name = cfg.get("optimizer", "ga").lower()
+    
+    common_kwargs = dict(
         cfg=cfg,
         base_image_path=base_image_path,
         image_id=image_id,
@@ -59,7 +63,16 @@ def main(cfg_path: str):
         yolo_detector=yolo,
         sam_segmenter=sam_segmenter,
         lama_inpainter=lama_inpainter,
-    )
+        )
+    if optimizer_name == "ga":
+        result = run_ga(**common_kwargs)
+    elif optimizer_name == "pso":
+        result = run_pso(**common_kwargs)
+    else:
+        raise ValueError(f"Unsupported optimizer: {optimizer_name}")
+    
+    print("Best variable:", result["best_variable"])
+    print("Best function:", result["best_function"])
 
 if __name__ == "__main__":
     import argparse

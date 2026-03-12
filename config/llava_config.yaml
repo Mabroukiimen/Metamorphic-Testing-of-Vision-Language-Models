@@ -8,6 +8,18 @@ vlm:
 sts:
   model_name: "sentence-transformers/all-MiniLM-L6-v2"
 
+optimizer: "pso"
+
+pso:
+  swarmsize: 10
+  omega: 0.5
+  phip: 0.5
+  phig: 0.5
+  maxiter: 10
+  minstep: 1e-8
+  minfunc: 1e-8
+  debug: true
+
 ga:
   population_size: 10
   max_num_iteration: 10
@@ -34,7 +46,7 @@ transformations:
     - [-40, 40]        # 8  ty
 
     # ---- SA selector + params ----
-    - [0, 4]           # 9  sa_type (0 none, 1 insert, 2 remove, 3 replace)
+    - [0, 3]           # 9  sa_type (0 none, 1 insert, 2 remove, 3 replace)
     - [0, 79]      # 10 ins_corpus_id (clip to N-1) #number of objects in the corpus, it could continue to grow so we set it to a big number here and it's handled later in the code min(corpus_size-1, int(value))
     - [0.5, 1.2]     # 11 ins_scale
     - [0, 30]          # 12 target_det_idx (clip to K-1); used in remove/replace
@@ -61,7 +73,7 @@ transformations:
 
 paths:
   base_images_meta: "config/base_tests_with_captions.json"
-  ga_log_path: "logs/ga_llava.jsonl"
+  ga_log_path: "logs/pso_llava.jsonl"
   tmp_root: "."
   object_corpus_dir: "/home/ubuntu/segment-anything/object_corpus"
   transformed_dir: "logs/transformed_images"
