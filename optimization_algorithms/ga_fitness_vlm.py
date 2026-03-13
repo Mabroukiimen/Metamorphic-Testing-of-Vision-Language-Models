@@ -14,6 +14,54 @@ from judge.llm_judge import judge_score_row
 import os
 print("PID:", os.getpid())
 
+
+#dets: detections from sp_img
+#base_yolo_dets: detections from base_img
+#we match the bbox of the chosen det in sp_img to the base_img det with highest IoU, we then use the matched base det class name as the "target class" that the SA is supposed to remove or replace, and we check the transformed caption to see if it successfully removed/replaced that target class.
+
+#chosen_idx is the index of the selected detection in dets, which is determined by the gene TARGET_DET_IDX in the GA vector. The system will try to remove/replace the object corresponding to that detection, so it’s like the “target object” for the SA. We want to make sure that the target object is actually present in the image, so we use YOLO detections to find it. If there are no detections, then we can’t really perform a removal or replacement, so we return a bad fitness score. If there are detections, we clip the chosen_idx to be within the range of available detections. Then we take the bounding box of that chosen detection in the sp_img, and we find which detection in the base_img has the highest IoU with that bounding box. We consider that matched detection in the base_img as the “corresponding object” that we are trying to remove or replace. We use its class name as the target class for judging whether the SA successfully removed or replaced it in the caption.
+
+def bbox_iou_xyxy(boxA, boxB) -> float:    #after choosing chosen_idx on sp_img, match its bbox to the base-image bbox with highest IoU
+    ax1, ay1, ax2, ay2 = boxA
+    bx1, by1, bx2, by2 = boxB
+
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+
+    inter_w = max(0, inter_x2 - inter_x1)
+    inter_h = max(0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+
+    areaA = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    areaB = max(0, bx2 - bx1) * max(0, by2 - by1)
+
+    union = areaA + areaB - inter_area
+    if union <= 0:
+        return 0.0
+
+    return inter_area / union
+
+
+def match_sp_det_to_base_det(sp_det, base_dets):
+    if not base_dets:
+        return None, -1, 0.0
+
+    best_idx = -1
+    best_iou = -1.0
+
+    for i, bdet in enumerate(base_dets):
+        iou = bbox_iou_xyxy(sp_det.bbox_xyxy, bdet.bbox_xyxy)
+        if iou > best_iou:
+            best_iou = iou
+            best_idx = i
+
+    if best_idx == -1:
+        return None, -1, 0.0
+
+    return base_dets[best_idx], best_idx, best_iou
+
 def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     
     cfg = kwargs["cfg"]
@@ -146,6 +194,19 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         chosen_idx = min(max(0, target_gene), len(dets) - 1)
     else:
         chosen_idx = 0  # for insertion, can ignore target
+        
+    matched_base_det = None
+    matched_base_idx = -1
+    matched_base_iou = 0.0
+    matched_base_cls_name = "UNKNOWN"
+    
+    if sa_type in (2, 3) and len(dets) > 0 and len(base_yolo_dets) > 0:
+        sp_chosen_det = dets[chosen_idx]
+        matched_base_det, matched_base_idx, matched_base_iou = match_sp_det_to_base_det(
+        sp_chosen_det, base_yolo_dets
+    )
+    if matched_base_det is not None:
+        matched_base_cls_name = matched_base_det.cls_name
 
     # clip corpus ids to corpus size
     N = corpus_size(paths["object_corpus_dir"])
@@ -189,6 +250,11 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         rep_scale=rep_scale,
     )
     record["sa"].update(sa_log)
+    
+    if sa_type in (2, 3):
+        record["sa"]["matched_base_det_idx"] = int(matched_base_idx)
+        record["sa"]["matched_base_iou"] = float(matched_base_iou)
+        record["sa"]["matched_base_cls_name"] = matched_base_cls_name
 
     tmp_path = out_dir / f"img{image_id}_eval{eval_idx:04d}_sa{sa_type}.png"
     final_img.save(tmp_path)

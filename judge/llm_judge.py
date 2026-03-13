@@ -24,22 +24,22 @@ def build_prompt(row: Dict[str, Any]) -> str:
     )
         
     elif sa_type == 2:
-        removed_class = sa.get("removed_cls_name", "UNKNOWN")
+        removed_class = sa.get("matched_base_cls_name", sa.get("removed_cls_name", "UNKNOWN"))
         allowed_new_class = None
         mr_text = f"REMOVE target object class: {removed_class}"
         expected_change_text = (
             f"An object of class '{removed_class}' was removed. "
-            f"The transformed caption should stop mentioning this removed object."
+            f"The transformed caption should stop mentioning this removed object, unless it existed in plural form before."
     )
         
     elif sa_type == 3:
-        old_class = sa.get("replaced_cls_name", "UNKNOWN")
+        old_class = sa.get("matched_base_cls_name", sa.get("replaced_cls_name", "UNKNOWN"))
         new_class = sa.get("replacement_class_name", "UNKNOWN")
         allowed_new_class = new_class
         mr_text = f"REPLACE target {old_class} WITH {new_class}"
         expected_change_text = (
             f"An object of class '{old_class}' was replaced with an object of class '{new_class}'. "
-            f"The transformed caption should reflect '{new_class}' rather than '{old_class}'."
+            f"The transformed caption should reflect '{new_class}' rather than '{old_class}'. If the object of class '{old_class}' existed more than one time (plural form), then it's correct to still be mentioned, however, the caption should also mention '{new_class}'."
     )
         
     else:
@@ -58,6 +58,12 @@ Metamorphic relation applied:
 
 Expected semantic change:
 - {expected_change_text}
+
+Base image detected object classes:
+- {base_object_classes}
+
+Allowed newly appearing object class under this MR:
+- {allowed_new_class if allowed_new_class is not None else "none"}
 
 Object-class interpretation rules:
 
