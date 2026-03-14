@@ -14,14 +14,25 @@ from judge.llm_judge import judge_score_row
 import os
 print("PID:", os.getpid())
 
+# base_yolo_dets: detections from the base image
+# dets: detections from the SP-transformed image
+#
+# The GA now selects the target object from base_yolo_dets using TARGET_DET_IDX.
+# Since TARGET_DET_IDX is dynamically bounded in run_ga(), it always refers to a
+# valid detection in the base image.
+#
+# For removal/replacement, we then match the chosen base-image detection to the
+# SP-image detection with the highest IoU. This gives us:
+# - the SP detection/bbox to actually modify in apply_sa()
+# - the base-image class name to use as the semantic identity of the target object
+#
+# This avoids relying on unstable YOLO class labels from the SP image.
 
-#dets: detections from sp_img
-#base_yolo_dets: detections from base_img
-#we match the bbox of the chosen det in sp_img to the base_img det with highest IoU, we then use the matched base det class name as the "target class" that the SA is supposed to remove or replace, and we check the transformed caption to see if it successfully removed/replaced that target class.
+# chosen_base_idx is the index of the selected detection in base_yolo_dets.
+# matched_sp_idx is the index of the SP-image detection that best matches that
+# chosen base detection by IoU.
 
-#chosen_idx is the index of the selected detection in dets, which is determined by the gene TARGET_DET_IDX in the GA vector. The system will try to remove/replace the object corresponding to that detection, so it’s like the “target object” for the SA. We want to make sure that the target object is actually present in the image, so we use YOLO detections to find it. If there are no detections, then we can’t really perform a removal or replacement, so we return a bad fitness score. If there are detections, we clip the chosen_idx to be within the range of available detections. Then we take the bounding box of that chosen detection in the sp_img, and we find which detection in the base_img has the highest IoU with that bounding box. We consider that matched detection in the base_img as the “corresponding object” that we are trying to remove or replace. We use its class name as the target class for judging whether the SA successfully removed or replaced it in the caption.
-
-def bbox_iou_xyxy(boxA, boxB) -> float:    #after choosing chosen_idx on sp_img, match its bbox to the base-image bbox with highest IoU
+def bbox_iou_xyxy(boxA, boxB) -> float: 
     ax1, ay1, ax2, ay2 = boxA
     bx1, by1, bx2, by2 = boxB
 
@@ -44,15 +55,15 @@ def bbox_iou_xyxy(boxA, boxB) -> float:    #after choosing chosen_idx on sp_img,
     return inter_area / union
 
 
-def match_sp_det_to_base_det(sp_det, base_dets):
-    if not base_dets:
+def match_base_det_to_sp_det(base_det, sp_dets):
+    if not sp_dets:
         return None, -1, 0.0
 
     best_idx = -1
     best_iou = -1.0
 
-    for i, bdet in enumerate(base_dets):
-        iou = bbox_iou_xyxy(sp_det.bbox_xyxy, bdet.bbox_xyxy)
+    for i, sdet in enumerate(sp_dets):
+        iou = bbox_iou_xyxy(base_det.bbox_xyxy, sdet.bbox_xyxy)
         if iou > best_iou:
             best_iou = iou
             best_idx = i
@@ -60,10 +71,10 @@ def match_sp_det_to_base_det(sp_det, base_dets):
     if best_idx == -1:
         return None, -1, 0.0
 
-    return base_dets[best_idx], best_idx, best_iou
+    return sp_dets[best_idx], best_idx, best_iou
+
 
 def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
-    
     cfg = kwargs["cfg"]
     paths = cfg["paths"]
     thr = cfg["thresholds"]
@@ -79,12 +90,13 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     sam  = kwargs["sam_segmenter"]
     lama = kwargs.get("lama_inpainter", None)
 
-    # Dict[str, Any] = kwargs.setdefault("cache", {})
     cache: Dict[str, Any] = kwargs["cache"]
     print("CACHE_ID:", id(cache))
     print("fitness call, cache keys:", list(cache.keys())[:5])
+    
     log_path = Path(paths["ga_log_path"])
-    out_dir = Path(paths["transformed_dir"]); out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = Path(paths["transformed_dir"])
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # cache base image
     if "base_img" not in cache:
@@ -93,12 +105,12 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     
     topk = int(thr.get("yolo_topk", 10))
     
+    # cache base detections
     if "base_yolo_dets" not in cache:
         cache["base_yolo_dets"] = yolo.detect_topk(base_img, topk=topk)
         
     base_yolo_dets = cache["base_yolo_dets"]
     base_object_classes = sorted(list({d.cls_name for d in base_yolo_dets}))
-    
 
     # cache base caption
     if "base_caption" not in cache:
@@ -132,8 +144,6 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     eval_idx = cache.get("eval_idx", 0)
     cache["eval_idx"] = eval_idx + 1
     
-    
-    
     #logs
     record: Dict[str, Any] = {
         "image": base_image_path,
@@ -161,11 +171,15 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     if sa_type == 0:
         tmp_path = out_dir / f"img{image_id}_eval{eval_idx:04d}_sp.png"
         sp_img.save(tmp_path)
+        
         print(f"\n[EVAL {eval_idx:04d}] saved: {tmp_path.resolve()}")
         print(f"[EVAL {eval_idx:04d}] vector: {list(map(float, v))}")
+        
         trf_caption = vlm_runner.caption(str(tmp_path.resolve()), prompt=cfg["vlm"]["caption_prompt"])
         print("transformed caption:", trf_caption)
+        
         dist = sts.distance(base_caption, trf_caption)
+        
         record["transformed_image_path"] = str(tmp_path.resolve())
         record["transformed_caption"] = trf_caption
         record["sts_distance"] = float(dist)
@@ -183,30 +197,31 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         {"cls_id": d.cls_id, "cls_name": d.cls_name, "conf": d.conf, "bbox_xyxy": list(d.bbox_xyxy)}
         for d in dets
     ]
-
-    # If need target but no dets -> reject
+    
+    # If need target (remove/replace) but no sp detections -> reject
     if (sa_type in (2, 3)) and len(dets) == 0:
         return 1e6
-
-    # clip target_det_idx
-    target_gene = int(round(v[Vec.TARGET_DET_IDX]))    #TARGET_DET_IDX is the gene in the GA vector that tells the system which detected object to choose from YOLO’s detections, in case of removal or replacement.
-    if len(dets) > 0:
-        chosen_idx = min(max(0, target_gene), len(dets) - 1)
-    else:
-        chosen_idx = 0  # for insertion, can ignore target
-        
-    matched_base_det = None
-    matched_base_idx = -1
-    matched_base_iou = 0.0
+    
+    #GA now chooses among base detections, which is more stable. We then find the best-matching SP detection to determine what to modify in the SP image.
+    target_gene = int(v[Vec.TARGET_DET_IDX])
+    chosen_base_idx = target_gene  # valid because run_ga set dynamic bounds
+    
+    matched_sp_det = None
+    matched_sp_idx = -1
+    matched_sp_iou = 0.0
     matched_base_cls_name = "UNKNOWN"
     
-    if sa_type in (2, 3) and len(dets) > 0 and len(base_yolo_dets) > 0:
-        sp_chosen_det = dets[chosen_idx]
-        matched_base_det, matched_base_idx, matched_base_iou = match_sp_det_to_base_det(
-        sp_chosen_det, base_yolo_dets
-    )
-    if matched_base_det is not None:
-        matched_base_cls_name = matched_base_det.cls_name
+    if sa_type in (2, 3):
+        if len(base_yolo_dets) == 0:
+            return 1e6
+        
+        base_target_det = base_yolo_dets[chosen_base_idx]
+        matched_base_cls_name = base_target_det.cls_name
+        
+        matched_sp_det, matched_sp_idx, matched_sp_iou = match_base_det_to_sp_det(base_target_det, dets)
+        
+        if matched_sp_det is None:
+            return 1e6
 
     # clip corpus ids to corpus size
     N = corpus_size(paths["object_corpus_dir"])
@@ -229,18 +244,22 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     elif sa_type == 3:
         rep_id = corpus_id(v[Vec.REP_CORPUS_ID])
         rep_scale = float(v[Vec.REP_SCALE])
-        
     
-    if sa_type in (2, 3):   # removal or replacement
+    if sa_type in (2, 3):
         if lama is None:
             raise ValueError("lama_inpainter is required for removal/replacement")
+    
+    if sa_type in (2, 3):
+        chosen_idx_for_sa = matched_sp_idx
+    else:
+        chosen_idx_for_sa = 0 # insertion ignores chosen target
     
 
     final_img, sa_log = apply_sa(
         img_sp=sp_img,
         sa_type=sa_type,
         yolo_dets=dets,
-        chosen_idx=chosen_idx,
+        chosen_idx=chosen_idx_for_sa,
         sam_segmenter=sam,
         lama_inpainter=lama,
         object_corpus_dir=paths["object_corpus_dir"],
@@ -249,15 +268,18 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         rep_corpus_id=rep_id,
         rep_scale=rep_scale,
     )
+    
     record["sa"].update(sa_log)
     
     if sa_type in (2, 3):
-        record["sa"]["matched_base_det_idx"] = int(matched_base_idx)
-        record["sa"]["matched_base_iou"] = float(matched_base_iou)
+        record["sa"]["chosen_base_idx"] = int(chosen_base_idx)
+        record["sa"]["matched_sp_det_idx"] = int(matched_sp_idx)
+        record["sa"]["matched_sp_iou"] = float(matched_sp_iou)
         record["sa"]["matched_base_cls_name"] = matched_base_cls_name
 
     tmp_path = out_dir / f"img{image_id}_eval{eval_idx:04d}_sa{sa_type}.png"
     final_img.save(tmp_path)
+    
     trf_caption = vlm_runner.caption(str(tmp_path.resolve()), prompt=cfg["vlm"]["caption_prompt"])
     record["transformed_image_path"] = str(tmp_path.resolve())
     record["transformed_caption"] = trf_caption
@@ -268,12 +290,13 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     record["llm_judge"] = label
     record["llm_score_1_to_5"] = score_1_5
     record["llm_score_norm_0_1"] = norm
-    record["sa"]["chosen_idx"] = int(chosen_idx)
+    record["sa"]["chosen_idx"] = int(chosen_idx_for_sa)
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
+    # score : 1=correct, 5=wrong
     # norm = wrongness in [0,1] (0=correct, 1=wrong)
     # GA minimizes -> return -norm so it maximizes wrongness
     return -float(norm)

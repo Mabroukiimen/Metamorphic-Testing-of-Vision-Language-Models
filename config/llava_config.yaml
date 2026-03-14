@@ -8,7 +8,7 @@ vlm:
 sts:
   model_name: "sentence-transformers/all-MiniLM-L6-v2"
 
-optimizer: "pso"
+optimizer: "ga"
 
 pso:
   swarmsize: 10
