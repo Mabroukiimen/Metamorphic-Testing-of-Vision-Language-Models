@@ -13,6 +13,13 @@ from Utils.vector_layout import Vec
 
 def run_ga(cfg, **kwargs_from_main):
     var_bound = np.array(cfg["transformations"]["var_bound"], dtype=float)
+    
+    layout = cfg["layout"]
+    
+    print("Vec.N =", Vec.N)
+    print("len(var_bound) =", len(var_bound))
+    print("len(layout) =", len(layout))
+
 
     base_image_path = kwargs_from_main["base_image_path"]
     yolo = kwargs_from_main["yolo_detector"]
@@ -57,3 +64,6 @@ def run_ga(cfg, **kwargs_from_main):
     )
     ga.run()
     return {"best_variable": ga.best_variable, "best_function": ga.best_function}
+
+
+
