@@ -51,6 +51,8 @@ def main(cfg_path: str):
     checkpoint_path="/home/ubuntu/lama/big-lama/models/best.ckpt",
     device="cuda",
 )
+    print("LaMa created:", lama_inpainter is not None)
+    print("LaMa type:", type(lama_inpainter))
 
     optimizer_name = cfg.get("optimizer", "ga").lower()
     

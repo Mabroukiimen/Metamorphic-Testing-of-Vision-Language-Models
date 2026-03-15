@@ -120,24 +120,73 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
 
     v = list(tr_vector)
     
-    decoder = VectorDecoderVLM(base_img)
-    
-    px_img = decoder.apply_pixel(v)
-    psnr_val = compute_psnr_pil(base_img, px_img)
-    psnr_min = float(thr.get("psnr_min", 20.0))
-    if psnr_val < psnr_min:
-        '''
-        GA is set up to minimize the fitness value.
-        So if a candidate is “invalid” (PSNR < threshold), we want it to look very bad to the GA.
-        Returning a huge value like 1e6 makes that individual have terrible fitness, so it won’t be selected and won’t survive.'''
-        return 1e6  
-    
-    sp_img = decoder.apply_geometric(px_img, v)
-
-    # SA selector
     sa_type = int(round(v[Vec.SA_TYPE]))
-    sa_type = max(0, min(3, sa_type))
+    sa_type = max(0, min(5, sa_type))
     
+    
+    sp_dict = {
+        "b_bright": int(round(v[Vec.B_BRIGHT])),
+        "bright_factor": float(v[Vec.BRIGHT_FACTOR]),
+        
+        "b_blur": int(round(v[Vec.B_BLUR])),
+        "blur_radius": float(v[Vec.BLUR_RADIUS]),
+        
+        "b_contrast": int(round(v[Vec.B_CONTRAST])),
+        "contrast_factor": float(v[Vec.CONTRAST_FACTOR]),
+        
+        "b_saturation": int(round(v[Vec.B_SATURATION])),
+        "saturation_factor": float(v[Vec.SATURATION_FACTOR]),
+        
+        "b_noise": int(round(v[Vec.B_NOISE])),
+        "noise_std": float(v[Vec.NOISE_STD]),
+        
+        "b_rotate": int(round(v[Vec.B_ROTATE])),
+        "rot_angle": float(v[Vec.ROT_ANGLE]),
+        
+        "b_translate": int(round(v[Vec.B_TRANSLATE])),
+        "tx": int(round(v[Vec.TX])),
+        "ty": int(round(v[Vec.TY])),
+        
+        "b_flip": int(round(v[Vec.B_FLIP])),
+        "b_shear": int(round(v[Vec.B_SHEAR])),
+        "shear_x": float(v[Vec.SHEAR_X]),
+        "shear_y": float(v[Vec.SHEAR_Y]),
+        
+        "b_zoom": int(round(v[Vec.B_ZOOM])),
+        "zoom_factor": float(v[Vec.ZOOM_FACTOR]),
+}
+    sa_dict = {
+        "sa_type": sa_type,
+        "ins_corpus_id": int(round(v[Vec.INS_CORPUS_ID])),
+        "ins_scale": float(v[Vec.INS_SCALE]),
+        "target_det_idx": int(round(v[Vec.TARGET_DET_IDX])),
+        "rep_corpus_id": int(round(v[Vec.REP_CORPUS_ID])),
+        "rep_scale": float(v[Vec.REP_SCALE]),
+        "obj_scale_factor": float(v[Vec.OBJ_SCALE_FACTOR]),
+}
+    
+    decoder = VectorDecoderVLM(base_img)
+    psnr_min = float(thr.get("psnr_min", 20.0))
+    
+    if sa_type == 4:
+        # object_local_sp:
+        psnr_val = None
+        sp_img = base_img.copy()
+    else:
+        # normal pipeline:
+        # apply global SP to the full image
+        px_img = decoder.apply_pixel(v)
+        psnr_val = compute_psnr_pil(base_img, px_img)
+        if psnr_val < psnr_min:
+            '''
+            GA is set up to minimize the fitness value.
+            So if a candidate is “invalid” (PSNR < threshold), we want it to look very bad to the GA.
+            Returning a huge value like 1e6 makes that individual have terrible fitness, so it won’t be selected and won’t survive.'''
+            return 1e6
+        
+        sp_img = decoder.apply_geometric(px_img, v)
+
+
     #sa_type = 0  # TEMP: run SP-only (no YOLO/SAM/LLM judge)
 
     # prepare logging shell
@@ -152,18 +201,8 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         "base_caption": base_caption,
         "base_image_object_classes": base_object_classes,
         "psnr_pixel": psnr_val,
-        "sp": {
-            "b_bright": int(round(v[Vec.B_BRIGHT])),
-            "bright_factor": float(v[Vec.BRIGHT_FACTOR]),
-            "b_blur": int(round(v[Vec.B_BLUR])),
-            "blur_radius": float(v[Vec.BLUR_RADIUS]),
-            "b_rotate": int(round(v[Vec.B_ROTATE])),
-            "rot_angle": float(v[Vec.ROT_ANGLE]),
-            "b_translate": int(round(v[Vec.B_TRANSLATE])),
-            "tx": int(v[Vec.TX]),
-            "ty": int(v[Vec.TY]),
-        },
-        "sa": {"sa_type": sa_type},
+        "sp": sp_dict,
+        "sa": sa_dict.copy(),
         "eval_idx": eval_idx,
     }
 
@@ -199,11 +238,11 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     ]
     
     # If need target (remove/replace) but no sp detections -> reject
-    if (sa_type in (2, 3)) and len(dets) == 0:
+    if (sa_type in (2, 3, 4, 5)) and len(dets) == 0:
         return 1e6
     
     #GA now chooses among base detections, which is more stable. We then find the best-matching SP detection to determine what to modify in the SP image.
-    target_gene = int(v[Vec.TARGET_DET_IDX])
+    target_gene = int(round(v[Vec.TARGET_DET_IDX]))
     chosen_base_idx = target_gene  # valid because run_ga set dynamic bounds
     
     matched_sp_det = None
@@ -211,7 +250,7 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     matched_sp_iou = 0.0
     matched_base_cls_name = "UNKNOWN"
     
-    if sa_type in (2, 3):
+    if sa_type in (2, 3, 4, 5):
         if len(base_yolo_dets) == 0:
             return 1e6
         
@@ -244,12 +283,17 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     elif sa_type == 3:
         rep_id = corpus_id(v[Vec.REP_CORPUS_ID])
         rep_scale = float(v[Vec.REP_SCALE])
+        
+        
+    print("sa_type =", sa_type)
+    print("lama is None?", lama is None)
+    print("lama object:", type(lama) if lama is not None else None)
     
-    if sa_type in (2, 3):
+    if sa_type in (2, 3, 5):
         if lama is None:
-            raise ValueError("lama_inpainter is required for removal/replacement")
+            raise ValueError("lama_inpainter is required for removal/replacement/scale_object")
     
-    if sa_type in (2, 3):
+    if sa_type in (2, 3, 4, 5):
         chosen_idx_for_sa = matched_sp_idx
     else:
         chosen_idx_for_sa = 0 # insertion ignores chosen target
@@ -258,6 +302,7 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     final_img, sa_log = apply_sa(
         img_sp=sp_img,
         sa_type=sa_type,
+        tr_vector=v,
         yolo_dets=dets,
         chosen_idx=chosen_idx_for_sa,
         sam_segmenter=sam,
@@ -267,11 +312,19 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         ins_scale=ins_scale,
         rep_corpus_id=rep_id,
         rep_scale=rep_scale,
+        obj_scale_factor=float(v[Vec.OBJ_SCALE_FACTOR]),
     )
+    
+    if final_img is None:
+        record["sa"].update(sa_log)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+        return 1e6
     
     record["sa"].update(sa_log)
     
-    if sa_type in (2, 3):
+    if sa_type in (2, 3, 4, 5):
         record["sa"]["chosen_base_idx"] = int(chosen_base_idx)
         record["sa"]["matched_sp_det_idx"] = int(matched_sp_idx)
         record["sa"]["matched_sp_iou"] = float(matched_sp_iou)
@@ -300,3 +353,5 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     # norm = wrongness in [0,1] (0=correct, 1=wrong)
     # GA minimizes -> return -norm so it maximizes wrongness
     return -float(norm)
+
+

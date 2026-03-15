@@ -5,6 +5,8 @@ import cv2
 from PIL import Image
 
 from Utils.corpus import load_corpus_item, load_corpus_mask, load_corpus_meta
+from Utils.psnr import compute_psnr_pil
+from transformations.transformer_sp_vlm import SPTransformer
 
 
 def pil_to_bgr(img: Image.Image):
@@ -277,6 +279,137 @@ def apply_replace(
     }
     return bgr_to_pil(out_bgr), log
 
+
+def apply_scale_object(
+    img_sp: Image.Image,
+    yolo_dets,
+    chosen_idx: int,
+    sam_segmenter,
+    lama_inpainter,
+    obj_scale_factor: float,
+):
+    
+    print("ENTERED apply_scale_object")
+    print("lama_inpainter is None?", lama_inpainter is None)
+    print("obj_scale_factor =", obj_scale_factor)
+    
+    if len(yolo_dets) == 0:
+        raise ValueError("No detections for scale_object")
+
+    if obj_scale_factor is None or obj_scale_factor <= 0:
+        raise ValueError(f"Invalid obj_scale_factor: {obj_scale_factor}")
+
+    chosen_idx = clip_idx(chosen_idx, len(yolo_dets))
+    det = yolo_dets[chosen_idx]
+
+    target_mask = segment_from_box(sam_segmenter, img_sp, det.bbox_xyxy)
+    img_bgr = pil_to_bgr(img_sp)
+
+    # remove original object first
+    removed_bgr = lama_inpainter.inpaint(img_bgr, target_mask)
+
+    # extract original object crop from the image using the mask
+    obj_crop, obj_mask, obj_bbox = extract_object_from_mask(img_bgr, target_mask)
+
+    h, w = obj_crop.shape[:2]
+    new_w = max(1, int(round(w * obj_scale_factor)))
+    new_h = max(1, int(round(h * obj_scale_factor)))
+
+    scaled_crop = cv2.resize(obj_crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    scaled_mask = cv2.resize(obj_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+
+    x1, y1, x2, y2 = det.bbox_xyxy
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+
+    paste_x = int(cx - new_w // 2)
+    paste_y = int(cy - new_h // 2)
+
+    out_bgr = paste_object(removed_bgr, scaled_crop, scaled_mask, paste_x, paste_y)
+
+    log = {
+        "sa_type": 5,
+        "sa_type_name": "scale_object",
+        "target_det_idx": int(chosen_idx),
+        "target_bbox": list(map(int, det.bbox_xyxy)),
+        "target_cls_name": det.cls_name,
+        "obj_scale_factor": float(obj_scale_factor),
+        "scaled_position": [int(paste_x), int(paste_y)],
+        "scaled_mask_area": int(scaled_mask.sum()),
+    }
+
+    return bgr_to_pil(out_bgr), log
+
+def apply_object_local_sp(   #no global SP first #no global SP first #PSNR is computed on the object crop only
+    img_sp: Image.Image,
+    tr_vector,
+    yolo_dets,
+    chosen_idx: int,
+    sam_segmenter,
+    psnr_min: float = 20.0,
+):
+    if len(yolo_dets) == 0:
+        raise ValueError("No detections for object_local_sp")
+
+    chosen_idx = clip_idx(chosen_idx, len(yolo_dets))
+    det = yolo_dets[chosen_idx]
+
+    mask = segment_from_box(sam_segmenter, img_sp, det.bbox_xyxy)
+    img_bgr = pil_to_bgr(img_sp)
+
+    obj_crop_bgr, obj_mask, obj_bbox = extract_object_from_mask(img_bgr, mask)
+    obj_crop_rgb = cv2.cvtColor(obj_crop_bgr, cv2.COLOR_BGR2RGB)
+    obj_crop_pil = Image.fromarray(obj_crop_rgb)
+
+    # apply SP only on the object crop
+    tr_px = SPTransformer(obj_crop_pil.copy())
+    obj_after_pixel = tr_px.apply_pixel(tr_vector)
+
+    obj_before_arr = np.array(obj_crop_pil.convert("RGB"))
+    obj_after_arr = np.array(obj_after_pixel.convert("RGB"))
+    
+    obj_before_arr = obj_before_arr * obj_mask[..., None]
+    obj_after_arr = obj_after_arr * obj_mask[..., None]
+    
+    obj_before_masked = Image.fromarray(obj_before_arr.astype(np.uint8))
+    obj_after_masked = Image.fromarray(obj_after_arr.astype(np.uint8))
+    
+    object_psnr = compute_psnr_pil(obj_before_masked, obj_after_masked)
+    
+    if object_psnr < psnr_min:
+        return None, {
+            "sa_type": 4,
+            "sa_type_name": "object_local_sp",
+            "target_det_idx": int(chosen_idx),
+            "target_bbox": list(map(int, det.bbox_xyxy)),
+            "target_cls_name": det.cls_name,
+            "object_psnr": float(object_psnr),
+            "rejected": True,
+            "reject_reason": "object_psnr_below_threshold",
+        }
+
+    tr_geo = SPTransformer(obj_after_pixel.copy())
+    obj_final_pil = tr_geo.apply_geometric(tr_vector)
+
+    obj_final_bgr = cv2.cvtColor(np.array(obj_final_pil.convert("RGB")), cv2.COLOR_RGB2BGR)
+    obj_final_bgr = obj_final_bgr * obj_mask[..., None]
+
+    x1, y1, _, _ = obj_bbox
+    out_bgr = paste_object(img_bgr, obj_final_bgr, obj_mask, x1, y1)
+
+    log = {
+        "sa_type": 4,
+        "sa_type_name": "object_local_sp",
+        "target_det_idx": int(chosen_idx),
+        "target_bbox": list(map(int, det.bbox_xyxy)),
+        "target_cls_name": det.cls_name,
+        "object_bbox": list(map(int, obj_bbox)),
+        "object_psnr": float(object_psnr),
+        "rejected": False,
+    }
+
+    return bgr_to_pil(out_bgr), log
+
 def apply_sa(
     img_sp: Image.Image,
     sa_type: int,
@@ -285,10 +418,12 @@ def apply_sa(
     sam_segmenter,
     lama_inpainter,
     object_corpus_dir: str,
+    tr_vector=None,
     ins_corpus_id=None,
     ins_scale=None,
     rep_corpus_id=None,
     rep_scale=None,
+    obj_scale_factor=None,
 ):
     if sa_type == 0:
         return img_sp, {"sa_type": 0}
@@ -322,6 +457,26 @@ def apply_sa(
             object_corpus_dir=object_corpus_dir,
             rep_corpus_id=rep_corpus_id,
             rep_scale=rep_scale,
+        )
+        
+    if sa_type == 4:
+        return apply_object_local_sp(
+            img_sp=img_sp,
+            tr_vector=tr_vector,
+            yolo_dets=yolo_dets,
+            chosen_idx=chosen_idx,
+            sam_segmenter=sam_segmenter,
+            psnr_min=20.0,
+        )
+        
+    if sa_type == 5:
+        return apply_scale_object(
+            img_sp=img_sp,
+            yolo_dets=yolo_dets,
+            chosen_idx=chosen_idx,
+            sam_segmenter=sam_segmenter,
+            lama_inpainter=lama_inpainter,
+            obj_scale_factor=obj_scale_factor,
         )
 
     raise ValueError(f"Unsupported sa_type: {sa_type}")
