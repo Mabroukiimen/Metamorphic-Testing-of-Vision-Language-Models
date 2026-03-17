@@ -2,6 +2,8 @@ import yaml, json, random
 from pathlib import Path
 
 import sys
+
+from optimization_algorithms.ga_fitness_vlm import vlm_mt_fitness
 sys.path.insert(0, "/home/ubuntu/lama")
 
 from Models.sts_scorer import STSScorer
@@ -18,6 +20,8 @@ from optimization_algorithms.ga_driver import run_ga
 from optimization_algorithms.pso_driver import run_pso
 
 from perception.lama_inpainter import LaMaInpainter
+
+from optimization_algorithms.random_search import run_random_search
 
 def load_base_tests(meta_path: str):
     return json.loads(Path(meta_path).read_text(encoding="utf-8"))
@@ -66,10 +70,14 @@ def main(cfg_path: str):
         sam_segmenter=sam_segmenter,
         lama_inpainter=lama_inpainter,
         )
+    
+    
     if optimizer_name == "ga":
         result = run_ga(**common_kwargs)
     elif optimizer_name == "pso":
         result = run_pso(**common_kwargs)
+    elif optimizer_name == "random_search":
+        result = run_random_search(**common_kwargs)
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}")
     

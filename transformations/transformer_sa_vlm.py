@@ -280,66 +280,6 @@ def apply_replace(
     return bgr_to_pil(out_bgr), log
 
 
-def apply_scale_object(
-    img_sp: Image.Image,
-    yolo_dets,
-    chosen_idx: int,
-    sam_segmenter,
-    lama_inpainter,
-    obj_scale_factor: float,
-):
-    
-    print("ENTERED apply_scale_object")
-    print("lama_inpainter is None?", lama_inpainter is None)
-    print("obj_scale_factor =", obj_scale_factor)
-    
-    if len(yolo_dets) == 0:
-        raise ValueError("No detections for scale_object")
-
-    if obj_scale_factor is None or obj_scale_factor <= 0:
-        raise ValueError(f"Invalid obj_scale_factor: {obj_scale_factor}")
-
-    chosen_idx = clip_idx(chosen_idx, len(yolo_dets))
-    det = yolo_dets[chosen_idx]
-
-    target_mask = segment_from_box(sam_segmenter, img_sp, det.bbox_xyxy)
-    img_bgr = pil_to_bgr(img_sp)
-
-    # remove original object first
-    removed_bgr = lama_inpainter.inpaint(img_bgr, target_mask)
-
-    # extract original object crop from the image using the mask
-    obj_crop, obj_mask, obj_bbox = extract_object_from_mask(img_bgr, target_mask)
-
-    h, w = obj_crop.shape[:2]
-    new_w = max(1, int(round(w * obj_scale_factor)))
-    new_h = max(1, int(round(h * obj_scale_factor)))
-
-    scaled_crop = cv2.resize(obj_crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-    scaled_mask = cv2.resize(obj_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
-
-    x1, y1, x2, y2 = det.bbox_xyxy
-    cx = (x1 + x2) // 2
-    cy = (y1 + y2) // 2
-
-    paste_x = int(cx - new_w // 2)
-    paste_y = int(cy - new_h // 2)
-
-    out_bgr = paste_object(removed_bgr, scaled_crop, scaled_mask, paste_x, paste_y)
-
-    log = {
-        "sa_type": 5,
-        "sa_type_name": "scale_object",
-        "target_det_idx": int(chosen_idx),
-        "target_bbox": list(map(int, det.bbox_xyxy)),
-        "target_cls_name": det.cls_name,
-        "obj_scale_factor": float(obj_scale_factor),
-        "scaled_position": [int(paste_x), int(paste_y)],
-        "scaled_mask_area": int(scaled_mask.sum()),
-    }
-
-    return bgr_to_pil(out_bgr), log
-
 def apply_object_local_sp(   #no global SP first #no global SP first #PSNR is computed on the object crop only
     img_sp: Image.Image,
     tr_vector,
@@ -406,6 +346,67 @@ def apply_object_local_sp(   #no global SP first #no global SP first #PSNR is co
         "object_bbox": list(map(int, obj_bbox)),
         "object_psnr": float(object_psnr),
         "rejected": False,
+    }
+
+    return bgr_to_pil(out_bgr), log
+
+
+def apply_scale_object(
+    img_sp: Image.Image,
+    yolo_dets,
+    chosen_idx: int,
+    sam_segmenter,
+    lama_inpainter,
+    obj_scale_factor: float,
+):
+    
+    print("ENTERED apply_scale_object")
+    print("lama_inpainter is None?", lama_inpainter is None)
+    print("obj_scale_factor =", obj_scale_factor)
+    
+    if len(yolo_dets) == 0:
+        raise ValueError("No detections for scale_object")
+
+    if obj_scale_factor is None or obj_scale_factor <= 0:
+        raise ValueError(f"Invalid obj_scale_factor: {obj_scale_factor}")
+
+    chosen_idx = clip_idx(chosen_idx, len(yolo_dets))
+    det = yolo_dets[chosen_idx]
+
+    target_mask = segment_from_box(sam_segmenter, img_sp, det.bbox_xyxy)
+    img_bgr = pil_to_bgr(img_sp)
+
+    # remove original object first
+    removed_bgr = lama_inpainter.inpaint(img_bgr, target_mask)
+
+    # extract original object crop from the image using the mask
+    obj_crop, obj_mask, obj_bbox = extract_object_from_mask(img_bgr, target_mask)
+
+    h, w = obj_crop.shape[:2]
+    new_w = max(1, int(round(w * obj_scale_factor)))
+    new_h = max(1, int(round(h * obj_scale_factor)))
+
+    scaled_crop = cv2.resize(obj_crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    scaled_mask = cv2.resize(obj_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+
+    x1, y1, x2, y2 = det.bbox_xyxy
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+
+    paste_x = int(cx - new_w // 2)
+    paste_y = int(cy - new_h // 2)
+
+    out_bgr = paste_object(removed_bgr, scaled_crop, scaled_mask, paste_x, paste_y)
+
+    log = {
+        "sa_type": 5,
+        "sa_type_name": "scale_object",
+        "target_det_idx": int(chosen_idx),
+        "target_bbox": list(map(int, det.bbox_xyxy)),
+        "target_cls_name": det.cls_name,
+        "obj_scale_factor": float(obj_scale_factor),
+        "scaled_position": [int(paste_x), int(paste_y)],
+        "scaled_mask_area": int(scaled_mask.sum()),
     }
 
     return bgr_to_pil(out_bgr), log

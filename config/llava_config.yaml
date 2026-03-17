@@ -8,7 +8,11 @@ vlm:
 sts:
   model_name: "sentence-transformers/all-MiniLM-L6-v2"
 
-optimizer: "ga"
+optimizer: "random_search"  # "ga", "pso", or "random_search"
+
+random_search:
+  num_samples: 5  #same budget as GA and PSO, population_size * max_num_iteration = 100
+  seed: 42
 
 pso:
   swarmsize: 10
@@ -102,7 +106,7 @@ layout:
 
 paths:
   base_images_meta: "config/base_tests_with_captions.json"
-  ga_log_path: "logs/pso_llava.jsonl"
+  ga_log_path: "logs/ga_llava.jsonl"
   tmp_root: "."
   object_corpus_dir: "/home/ubuntu/segment-anything/object_corpus"
   transformed_dir: "logs/transformed_images"
