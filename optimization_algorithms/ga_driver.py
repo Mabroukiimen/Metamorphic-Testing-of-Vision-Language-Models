@@ -11,6 +11,8 @@ from optimization_algorithms.ga_fitness_vlm import vlm_mt_fitness
 from PIL import Image
 from Utils.vector_layout import Vec
 
+from Utils.corpus import corpus_size
+
 def run_ga(cfg, **kwargs_from_main):
     var_bound = np.array(cfg["transformations"]["var_bound"], dtype=float)
     
@@ -32,6 +34,13 @@ def run_ga(cfg, **kwargs_from_main):
         raise ValueError("No base-image detections found.")
 
     var_bound[Vec.TARGET_DET_IDX] = [0, len(base_yolo_dets) - 1]
+    
+    N = corpus_size(cfg["paths"]["object_corpus_dir"])
+    if N == 0:
+        raise ValueError("Empty object corpus.")
+    
+    var_bound[Vec.INS_CORPUS_ID] = [0, N - 1]
+    var_bound[Vec.REP_CORPUS_ID] = [0, N - 1]
 
     dim = var_bound.shape[0]
     algo_params = cfg["ga"]

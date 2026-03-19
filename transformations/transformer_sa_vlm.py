@@ -147,9 +147,24 @@ def apply_insert(
     if ins_scale is None or ins_scale <= 0:
         raise ValueError(f"Invalid ins_scale: {ins_scale}")
 
+    bg_bgr = pil_to_bgr(img_sp)
+    img_h, img_w = bg_bgr.shape[:2]
+    
     h, w = obj_crop.shape[:2]
-    new_w = max(1, int(w * ins_scale))
-    new_h = max(1, int(h * ins_scale))
+    
+    # cap inserted object so it cannot dominate the image
+    max_w = int(0.25 * img_w)
+    max_h = int(0.25 * img_h)
+    
+    scale_cap = min(
+        max_w / max(1, w),
+        max_h / max(1, h),
+    )
+    
+    final_scale = min(float(ins_scale), float(scale_cap))
+    
+    new_w = max(1, int(round(w * final_scale)))
+    new_h = max(1, int(round(h * final_scale)))
 
     obj_crop = cv2.resize(obj_crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
     obj_mask = cv2.resize(obj_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
@@ -163,13 +178,15 @@ def apply_insert(
         obj_h=new_h,
         max_iou=0.15,
     )
+    
     out_bgr = paste_object(bg_bgr, obj_crop, obj_mask, ins_x, ins_y)
 
     log = {
         "sa_type": 1,
         "inserted_corpus_id": int(ins_corpus_id),
         "inserted_class_name": inserted_class_name,
-        "insert_scale": float(ins_scale),
+        "insert_scale": float(final_scale),
+        "requested_insert_scale": float(ins_scale),
         "insert_position": [int(ins_x), int(ins_y)],
         "inserted_mask_area": int(obj_mask.sum()),
     

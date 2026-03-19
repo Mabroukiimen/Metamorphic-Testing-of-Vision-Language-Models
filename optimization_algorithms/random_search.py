@@ -6,6 +6,8 @@ from PIL import Image
 from Utils.vector_layout import Vec
 from optimization_algorithms.ga_fitness_vlm import vlm_mt_fitness
 
+from Utils.corpus import corpus_size
+
 
 def _sample_gene(low: float, high: float, gene_type: str):
     if gene_type == "int":
@@ -44,6 +46,13 @@ def run_random_search(cfg, **kwargs_from_main):
 
     # dynamic bound for target_det_idx
     var_bound[Vec.TARGET_DET_IDX] = [0, len(base_yolo_dets) - 1]
+    
+    N = corpus_size(cfg["paths"]["object_corpus_dir"])
+    if N == 0:
+        raise ValueError("Empty object corpus.")
+    
+    var_bound[Vec.INS_CORPUS_ID] = [0, N - 1]
+    var_bound[Vec.REP_CORPUS_ID] = [0, N - 1]
 
     num_samples = int(rs_cfg.get("num_samples", 100))
     seed = rs_cfg.get("seed", 42)
