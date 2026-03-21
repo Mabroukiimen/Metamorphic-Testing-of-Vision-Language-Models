@@ -30,59 +30,64 @@ def main(cfg_path: str):
     cfg = yaml.safe_load(Path(cfg_path).open("r", encoding="utf-8"))
 
     tests = load_base_tests(cfg["paths"]["base_images_meta"])
-    sample = random.choice(tests)
-
-    base_image_path = sample["image_path"]
-    image_id = sample.get("image_id")
-
-    sts = STSScorer(cfg["sts"]["model_name"])
-    vlm = VLMRunner(
-    model_name=cfg["vlm"]["model_name"],
-    vlm_root=cfg["vlm"]["vlm_root"],
-    python_cmd=cfg["vlm"]["python_cmd"],
-    script_path=cfg["vlm"].get("script_path"),
-)
-
-    yolo = YOLODetector(model_path="yolov8l.pt", conf_thres=cfg["thresholds"].get("yolo_conf", 0.25))
-    sam_segmenter = SAMSegmenter(
-    checkpoint_path="/home/ubuntu/segment-anything/sam_vit_h_4b8939.pth",
-    model_type="vit_h",
-    device="cuda"
-)
-    
-    lama_inpainter = LaMaInpainter(
-    config_path="/home/ubuntu/lama/big-lama/config.yaml",
-    checkpoint_path="/home/ubuntu/lama/big-lama/models/best.ckpt",
-    device="cuda",
-)
-    print("LaMa created:", lama_inpainter is not None)
-    print("LaMa type:", type(lama_inpainter))
-
-    optimizer_name = cfg.get("optimizer", "ga").lower()
-    
-    common_kwargs = dict(
-        cfg=cfg,
-        base_image_path=base_image_path,
-        image_id=image_id,
-        vlm_runner=vlm,
-        sts_scorer=sts,
-        yolo_detector=yolo,
-        sam_segmenter=sam_segmenter,
-        lama_inpainter=lama_inpainter,
+    for sample in tests:
+        
+        base_image_path = sample["image_path"]
+        image_id = sample.get("image_id")
+        print(f"Processing image_id={image_id}, path={base_image_path}")
+        
+        base_image_path = sample["image_path"]
+        image_id = sample.get("image_id")
+        
+        sts = STSScorer(cfg["sts"]["model_name"])
+        vlm = VLMRunner(
+            model_name=cfg["vlm"]["model_name"],
+            vlm_root=cfg["vlm"]["vlm_root"],
+            python_cmd=cfg["vlm"]["python_cmd"],
+            script_path=cfg["vlm"].get("script_path"),
         )
-    
-    
-    if optimizer_name == "ga":
-        result = run_ga(**common_kwargs)
-    elif optimizer_name == "pso":
-        result = run_pso(**common_kwargs)
-    elif optimizer_name == "random_search":
-        result = run_random_search(**common_kwargs)
-    else:
-        raise ValueError(f"Unsupported optimizer: {optimizer_name}")
-    
-    print("Best variable:", result["best_variable"])
-    print("Best function:", result["best_function"])
+        
+        
+        yolo = YOLODetector(model_path="yolov8l.pt", conf_thres=cfg["thresholds"].get("yolo_conf", 0.25))
+        sam_segmenter = SAMSegmenter(
+            checkpoint_path="/home/ubuntu/segment-anything/sam_vit_h_4b8939.pth",
+            model_type="vit_h",
+            device="cuda"
+        )
+        
+        lama_inpainter = LaMaInpainter(
+            config_path="/home/ubuntu/lama/big-lama/config.yaml",
+            checkpoint_path="/home/ubuntu/lama/big-lama/models/best.ckpt",
+            device="cuda",
+        )
+        
+        print("LaMa created:", lama_inpainter is not None)
+        print("LaMa type:", type(lama_inpainter))
+        
+        optimizer_name = cfg.get("optimizer", "ga").lower()
+        
+        common_kwargs = dict(
+            cfg=cfg,
+            base_image_path=base_image_path,
+            image_id=image_id,
+            vlm_runner=vlm,
+            sts_scorer=sts,
+            yolo_detector=yolo,
+            sam_segmenter=sam_segmenter,
+            lama_inpainter=lama_inpainter,
+        )
+        
+        if optimizer_name == "ga":
+            result = run_ga(**common_kwargs)
+        elif optimizer_name == "pso":
+            result = run_pso(**common_kwargs)
+        elif optimizer_name == "random_search":
+            result = run_random_search(**common_kwargs)
+        else:
+            raise ValueError(f"Unsupported optimizer: {optimizer_name}")
+        
+        print("Best variable:", result["best_variable"])
+        print("Best function:", result["best_function"])
 
 if __name__ == "__main__":
     import argparse

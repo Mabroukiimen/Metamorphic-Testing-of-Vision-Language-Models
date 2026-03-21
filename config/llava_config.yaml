@@ -8,7 +8,7 @@ vlm:
 sts:
   model_name: "sentence-transformers/all-MiniLM-L6-v2"
 
-optimizer: "random_search"  # "ga", "pso", or "random_search"
+optimizer: "ga"  # "ga", "pso", or "random_search"
 
 random_search:
   num_samples: 5  #same budget as GA and PSO, population_size * max_num_iteration = 100
@@ -25,7 +25,7 @@ pso:
   debug: true
 
 ga:
-  population_size: 10
+  population_size: 100
   max_num_iteration: 10
   mutation_probability: 0.2
   elit_ratio: 0.05
@@ -46,7 +46,7 @@ transformations:
     - [0, 1]           # 4  b_contrast
     - [0.5, 1.8]       # 5  contrast_factor
     - [0, 1]           # 6  b_saturation
-    - [0.0, 2.0]       # 7  saturation_factor
+    - [0.0, 2.7]       # 7  saturation_factor
     - [0, 1]           # 8  b_noise
     - [0.0, 25.0]      # 9  noise_std
 
@@ -63,7 +63,7 @@ transformations:
     - [0.7, 1.3]       # 20 zoom_factor
 
     # ---- SA selector + params ----
-    - [0, 5]           # 21 sa_type (0 none, 1 insert, 2 remove, 3 replace, 4 object_local_sp, 5 scale_object)
+    - [0, 3]           # 21 sa_type (0 none, 1 insert, 2 remove, 3 replace, 4 object_local_sp, 5 scale_object)
     - [0, 999]          # 22 ins_corpus_id
     - [0.5, 1.0]       # 23 ins_scale
     - [0, 30]          # 24 target_det_idx
@@ -105,11 +105,11 @@ layout:
   - {index: 27, name: "obj_scale_factor", type: "float"}
 
 paths:
-  base_images_meta: "config/base_tests_with_captions.json"
+  base_images_meta: "/home/ubuntu/tests/base_tests_with_captions.json"
   ga_log_path: "logs/ga_llava.jsonl"
   tmp_root: "."
   object_corpus_dir: "/home/ubuntu/last_version/Utils/objects_corpus"
-  transformed_dir: "logs/transformed_images"
+  transformed_dir: "logs/transformed_images_llava_ga"
 
 thresholds:
   psnr_min: 20.0
@@ -120,4 +120,4 @@ thresholds:
 llm:
   model_url: "https://router.huggingface.co/v1/chat/completions"
   api_key_env: "HF_TOKEN"
-  judge_model: "google/gemma-2-27b-it"   #meta-llama/Llama-3.1-8B-Instruct  #meta-llama/Llama-3.1-70B-Instruct #meta-llama/Llama-3.3-70B-Instruct #Qwen/Qwen2.5-72B-Instruct" #mistralai/Mistral-7B-Instruct-v0.3
+  judge_model: "meta-llama/Llama-3.3-70B-Instruct"   #meta-llama/Llama-3.1-8B-Instruct  #meta-llama/Llama-3.1-70B-Instruct #meta-llama/Llama-3.3-70B-Instruct #Qwen/Qwen2.5-72B-Instruct" #mistralai/Mistral-7B-Instruct-v0.3

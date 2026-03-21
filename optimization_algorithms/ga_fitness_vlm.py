@@ -121,7 +121,7 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     v = list(tr_vector)
     
     sa_type = int(round(v[Vec.SA_TYPE]))
-    sa_type = max(0, min(5, sa_type))
+    sa_type = max(0, min(3, sa_type))
     
     
     sp_dict = {
@@ -200,6 +200,15 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         "vector": list(map(float, v)),
         "base_caption": base_caption,
         "base_image_object_classes": base_object_classes,
+        "base_yolo_dets": [
+        {
+            "cls_id": d.cls_id,
+            "cls_name": d.cls_name,
+            "conf": d.conf,
+            "bbox_xyxy": list(d.bbox_xyxy),
+        }
+        for d in base_yolo_dets
+    ],
         "psnr_pixel": psnr_val,
         "sp": sp_dict,
         "sa": sa_dict.copy(),
@@ -231,14 +240,14 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         return -float(dist)
 
     # ---- SA path ----
-    dets = yolo.detect_topk(sp_img, topk=topk)
-    record["sa"]["yolo_topk"] = [
+    dets_sp_img = yolo.detect_topk(sp_img, topk=topk)
+    record["sa"]["sp_img_dets"] = [
         {"cls_id": d.cls_id, "cls_name": d.cls_name, "conf": d.conf, "bbox_xyxy": list(d.bbox_xyxy)}
-        for d in dets
+        for d in dets_sp_img
     ]
     
     # If need target (remove/replace) but no sp detections -> reject
-    if (sa_type in (2, 3, 4, 5)) and len(dets) == 0:
+    if (sa_type in (2, 3, 4, 5)) and len(dets_sp_img) == 0:
         return 1e6
     
     #GA now chooses among base detections, which is more stable. We then find the best-matching SP detection to determine what to modify in the SP image.
@@ -257,7 +266,7 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         base_target_det = base_yolo_dets[chosen_base_idx]
         matched_base_cls_name = base_target_det.cls_name
         
-        matched_sp_det, matched_sp_idx, matched_sp_iou = match_base_det_to_sp_det(base_target_det, dets)
+        matched_sp_det, matched_sp_idx, matched_sp_iou = match_base_det_to_sp_det(base_target_det, dets_sp_img)
         
         if matched_sp_det is None:
             return 1e6
@@ -303,7 +312,7 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
         img_sp=sp_img,
         sa_type=sa_type,
         tr_vector=v,
-        yolo_dets=dets,
+        sp_img_dets=dets_sp_img,
         chosen_idx=chosen_idx_for_sa,
         sam_segmenter=sam,
         lama_inpainter=lama,
@@ -316,10 +325,10 @@ def vlm_mt_fitness(tr_vector: Sequence[float], *args, **kwargs) -> float:
     )
     
     if final_img is None:
-        record["sa"].update(sa_log)
+        '''record["sa"].update(sa_log)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
+            f.write(json.dumps(record) + "\n")'''     #we don't want to log rejected transformations, because they will flood the logs with failed attempts and make it hard to analyze successful/usable transformed images. 
         return 1e6
     
     record["sa"].update(sa_log)

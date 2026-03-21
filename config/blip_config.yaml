@@ -64,7 +64,6 @@ thresholds:
   sts: 0.27
 
 
-
 llm:
   model_url: "https://router.huggingface.co/v1/chat/completions"
   api_key_env: "HF_TOKEN"

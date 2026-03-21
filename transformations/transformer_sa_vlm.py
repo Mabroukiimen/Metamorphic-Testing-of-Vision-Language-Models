@@ -25,6 +25,49 @@ def clip_idx(idx: int, n: int) -> int:
 def segment_from_box(sam_segmenter, img_pil: Image.Image, bbox_xyxy):
     return sam_segmenter.mask_from_box(img_pil, bbox_xyxy)  
     # should return binary mask HxW
+    
+def refine_removal_mask(mask, bbox_xyxy, kernel_size=9, dilate_iters=2, use_bbox_union=True):
+    """
+    Refine object-removal mask before LaMa:
+    - dilate mask to cover boundaries / thin parts
+    - optionally union with an inner bbox safety region
+    """
+    mask_u8 = (mask > 0).astype(np.uint8)
+
+    # 1) dilate to remove halos / leftover parts
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    dilated = cv2.dilate(mask_u8, kernel, iterations=dilate_iters)
+
+    # 2) optional bbox safety union
+    if use_bbox_union:
+        x1, y1, x2, y2 = map(int, bbox_xyxy)
+        h, w = mask_u8.shape[:2]
+
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(w - 1, x2)
+        y2 = min(h - 1, y2)
+
+        bbox_mask = np.zeros_like(mask_u8, dtype=np.uint8)
+
+        # slightly shrink bbox so it does not become too aggressive
+        pad_x = max(1, int(0.05 * (x2 - x1 + 1)))
+        pad_y = max(1, int(0.05 * (y2 - y1 + 1)))
+
+        xx1 = min(max(0, x1 + pad_x), w - 1)
+        yy1 = min(max(0, y1 + pad_y), h - 1)
+        xx2 = min(max(0, x2 - pad_x), w - 1)
+        yy2 = min(max(0, y2 - pad_y), h - 1)
+
+        if xx2 > xx1 and yy2 > yy1:
+            bbox_mask[yy1:yy2 + 1, xx1:xx2 + 1] = 1
+            refined = np.maximum(dilated, bbox_mask)
+        else:
+            refined = dilated
+    else:
+        refined = dilated
+
+    return refined.astype(np.uint8)
 
 
 def extract_object_from_mask(img_bgr, mask):
@@ -129,7 +172,7 @@ def too_much_overlap(insert_box, yolo_dets, max_iou=0.15):
 
 def apply_insert(
     img_sp: Image.Image,
-    yolo_dets,
+    sp_img_dets,
     sam_segmenter,
     object_corpus_dir: str,
     ins_corpus_id: int,
@@ -173,7 +216,7 @@ def apply_insert(
     
     ins_x, ins_y = choose_insertion_xy(
         bg_bgr,
-        yolo_dets,
+        sp_img_dets,
         obj_w=new_w,
         obj_h=new_h,
         max_iou=0.15,
@@ -196,33 +239,57 @@ def apply_insert(
 
 def apply_remove(
     img_sp: Image.Image,
-    yolo_dets,
+    sp_img_dets,
     chosen_idx: int,
     sam_segmenter,
     lama_inpainter,
 ):
-    if len(yolo_dets) == 0:
+    if len(sp_img_dets) == 0:
         raise ValueError("No detections for removal")
 
-    chosen_idx = clip_idx(chosen_idx, len(yolo_dets))
-    det = yolo_dets[chosen_idx]
-    mask = segment_from_box(sam_segmenter, img_sp, det.bbox_xyxy)
+    chosen_idx = clip_idx(chosen_idx, len(sp_img_dets))
+    det = sp_img_dets[chosen_idx]
+
+    # 1) get raw SAM mask
+    raw_mask = segment_from_box(sam_segmenter, img_sp, det.bbox_xyxy)
+
+    # 2) refine mask before first inpainting
+    refined_mask = refine_removal_mask(
+        raw_mask,
+        det.bbox_xyxy,
+        kernel_size=9,
+        dilate_iters=2,
+        use_bbox_union=True,
+    )
 
     img_bgr = pil_to_bgr(img_sp)
-    out_bgr = lama_inpainter.inpaint(img_bgr, mask)  # your LaMa wrapper
+
+    # 3) first inpainting pass
+    out_bgr = lama_inpainter.inpaint(img_bgr, refined_mask)
+
+    # 4) second lighter inpainting pass
+    second_mask = cv2.dilate(
+        refined_mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1,
+    )
+    out_bgr = lama_inpainter.inpaint(out_bgr, second_mask)
 
     log = {
         "sa_type": 2,
         "target_det_idx": int(chosen_idx),
         "removed_bbox": list(map(int, det.bbox_xyxy)),
         "removed_cls_name": det.cls_name,
-        "mask_area": int(mask.sum()),
+        "raw_mask_area": int(raw_mask.sum()),
+        "refined_mask_area": int(refined_mask.sum()),
+        "second_mask_area": int(second_mask.sum()),
     }
+
     return bgr_to_pil(out_bgr), log
 
 def apply_replace(
     img_sp: Image.Image,
-    yolo_dets,
+    sp_img_dets,
     chosen_idx: int,
     sam_segmenter,
     lama_inpainter,
@@ -230,15 +297,16 @@ def apply_replace(
     rep_corpus_id: int,
     rep_scale: float,
 ):
-    if len(yolo_dets) == 0:
+    if len(sp_img_dets) == 0:
         raise ValueError("No detections for replacement")
 
-    chosen_idx = clip_idx(chosen_idx, len(yolo_dets))
-    det = yolo_dets[chosen_idx]
+    chosen_idx = clip_idx(chosen_idx, len(sp_img_dets))
+    det = sp_img_dets[chosen_idx]
 
     # target object in original image
     target_mask = segment_from_box(sam_segmenter, img_sp, det.bbox_xyxy)
     img_bgr = pil_to_bgr(img_sp)
+    img_h, img_w = img_bgr.shape[:2]
 
     # remove target object first
     removed_bgr = lama_inpainter.inpaint(img_bgr, target_mask)
@@ -269,8 +337,33 @@ def apply_replace(
     long_side = max(h, w)
     scale_factor = (base_size * rep_scale) / long_side
 
-    new_w = max(1, int(w * scale_factor))
-    new_h = max(1, int(h * scale_factor))
+    raw_new_w = max(1, int(round(w * scale_factor)))
+    raw_new_h = max(1, int(round(h * scale_factor)))
+
+    # cap 1: relative to target bbox
+    max_target_w = max(1, int(1.2 * target_w))
+    max_target_h = max(1, int(1.2 * target_h))
+
+    # cap 2: relative to full image
+    max_img_w = max(1, int(0.35 * img_w))
+    max_img_h = max(1, int(0.35 * img_h))
+
+    # final allowed maximum must satisfy both caps
+    final_max_w = min(max_target_w, max_img_w)
+    final_max_h = min(max_target_h, max_img_h)
+
+    cap_scale = min(
+        final_max_w / max(1, raw_new_w),
+        final_max_h / max(1, raw_new_h),
+        1.0,
+    )
+
+    new_w = max(1, int(round(raw_new_w * cap_scale)))
+    new_h = max(1, int(round(raw_new_h * cap_scale)))
+
+    # optional final safety reject
+    if new_w > int(0.5 * img_w) or new_h > int(0.5 * img_h):
+        return None, None
 
     obj_crop = cv2.resize(obj_crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
     obj_mask = cv2.resize(obj_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
@@ -293,23 +386,27 @@ def apply_replace(
         "replacement_scale": float(rep_scale),
         "replacement_position": [int(paste_x), int(paste_y)],
         "replacement_mask_area": int(obj_mask.sum()),
+        "raw_replacement_size": [int(raw_new_w), int(raw_new_h)],
+        "final_replacement_size": [int(new_w), int(new_h)],
+        "image_size": [int(img_w), int(img_h)],
+        "target_size": [int(target_w), int(target_h)],
+        "rejected": False,
     }
     return bgr_to_pil(out_bgr), log
-
 
 def apply_object_local_sp(   #no global SP first #no global SP first #PSNR is computed on the object crop only
     img_sp: Image.Image,
     tr_vector,
-    yolo_dets,
+    sp_img_dets,
     chosen_idx: int,
     sam_segmenter,
     psnr_min: float = 20.0,
 ):
-    if len(yolo_dets) == 0:
+    if len(sp_img_dets) == 0:
         raise ValueError("No detections for object_local_sp")
 
-    chosen_idx = clip_idx(chosen_idx, len(yolo_dets))
-    det = yolo_dets[chosen_idx]
+    chosen_idx = clip_idx(chosen_idx, len(sp_img_dets))
+    det = sp_img_dets[chosen_idx]
 
     mask = segment_from_box(sam_segmenter, img_sp, det.bbox_xyxy)
     img_bgr = pil_to_bgr(img_sp)
@@ -370,7 +467,7 @@ def apply_object_local_sp(   #no global SP first #no global SP first #PSNR is co
 
 def apply_scale_object(
     img_sp: Image.Image,
-    yolo_dets,
+    sp_img_dets,
     chosen_idx: int,
     sam_segmenter,
     lama_inpainter,
@@ -381,14 +478,14 @@ def apply_scale_object(
     print("lama_inpainter is None?", lama_inpainter is None)
     print("obj_scale_factor =", obj_scale_factor)
     
-    if len(yolo_dets) == 0:
+    if len(sp_img_dets) == 0:
         raise ValueError("No detections for scale_object")
 
     if obj_scale_factor is None or obj_scale_factor <= 0:
         raise ValueError(f"Invalid obj_scale_factor: {obj_scale_factor}")
 
-    chosen_idx = clip_idx(chosen_idx, len(yolo_dets))
-    det = yolo_dets[chosen_idx]
+    chosen_idx = clip_idx(chosen_idx, len(sp_img_dets))
+    det = sp_img_dets[chosen_idx]
 
     target_mask = segment_from_box(sam_segmenter, img_sp, det.bbox_xyxy)
     img_bgr = pil_to_bgr(img_sp)
@@ -431,7 +528,7 @@ def apply_scale_object(
 def apply_sa(
     img_sp: Image.Image,
     sa_type: int,
-    yolo_dets,
+    sp_img_dets,
     chosen_idx: int,
     sam_segmenter,
     lama_inpainter,
@@ -449,7 +546,7 @@ def apply_sa(
     if sa_type == 1:
         return apply_insert(
             img_sp=img_sp,
-            yolo_dets=yolo_dets,
+            sp_img_dets=sp_img_dets,
             sam_segmenter=sam_segmenter,
             object_corpus_dir=object_corpus_dir,
             ins_corpus_id=ins_corpus_id,
@@ -459,7 +556,7 @@ def apply_sa(
     if sa_type == 2:
         return apply_remove(
             img_sp=img_sp,
-            yolo_dets=yolo_dets,
+            sp_img_dets=sp_img_dets,
             chosen_idx=chosen_idx,
             sam_segmenter=sam_segmenter,
             lama_inpainter=lama_inpainter,
@@ -468,7 +565,7 @@ def apply_sa(
     if sa_type == 3:
         return apply_replace(
             img_sp=img_sp,
-            yolo_dets=yolo_dets,
+            sp_img_dets=sp_img_dets,
             chosen_idx=chosen_idx,
             sam_segmenter=sam_segmenter,
             lama_inpainter=lama_inpainter,
@@ -481,7 +578,7 @@ def apply_sa(
         return apply_object_local_sp(
             img_sp=img_sp,
             tr_vector=tr_vector,
-            yolo_dets=yolo_dets,
+            sp_img_dets=sp_img_dets,
             chosen_idx=chosen_idx,
             sam_segmenter=sam_segmenter,
             psnr_min=20.0,
@@ -490,7 +587,7 @@ def apply_sa(
     if sa_type == 5:
         return apply_scale_object(
             img_sp=img_sp,
-            yolo_dets=yolo_dets,
+            sp_img_dets=sp_img_dets,
             chosen_idx=chosen_idx,
             sam_segmenter=sam_segmenter,
             lama_inpainter=lama_inpainter,

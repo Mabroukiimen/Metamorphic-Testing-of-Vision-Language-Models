@@ -2,14 +2,17 @@ import os, json, requests
 from typing import Dict, Any, Tuple
 from judge.normalize import normalize_1_to_5
 
-from typing import Dict, Any
-
 
 def build_prompt(row: Dict[str, Any]) -> str:
     base_cap = row["base_caption"]
     trf_cap = row["transformed_caption"]
-    detections_list = row.get("yolo_topk", [])
+    base_dets = row.get("base_yolo_dets", [])
     base_object_classes = row.get("base_image_object_classes", [])
+    
+    removed_class_count_in_base = None
+    removed_class_was_unique_in_base = None
+    expected_remaining_removed_class_instances = None
+    removal_evidence_text = ""
 
     sa = row.get("sa", {})
     sa_type = sa.get("sa_type", 0)
@@ -27,15 +30,27 @@ def build_prompt(row: Dict[str, Any]) -> str:
             f"The transformed caption should mention this inserted object, or clearly refer to it using a close synonym, "
             f"near-equivalent term, or natural description."
         )
-
+        
     elif sa_type == 2:
         removed_class = sa.get("matched_base_cls_name", sa.get("removed_cls_name", "UNKNOWN"))
+        removed_class_count_in_base = sum(
+            1 for det in base_dets
+            if det.get("cls_name") == removed_class
+            )
+        removed_class_was_unique_in_base = (removed_class_count_in_base == 1)
+        expected_remaining_removed_class_instances = max(0, removed_class_count_in_base - 1)
+        removal_evidence_text = f"""
+        Removal-specific evidence:
+        - Removed class count in base image: {removed_class_count_in_base}
+        - Was the removed class unique in the base image? {removed_class_was_unique_in_base}
+        - Expected remaining instances of the removed class after removal: {expected_remaining_removed_class_instances}
+        """
         mr_text = f"REMOVE target object class: {removed_class}"
         expected_change_text = (
             f"An object of class '{removed_class}' was removed from the image. "
-            f"The transformed caption should stop mentioning this removed object, unless other instances of the same class "
-            f"still remain in the scene."
-        )
+            f"The transformed caption should reflect the updated scene after removal. "
+            f"If that removed object was the only instance, it should no longer be mentioned as present. "
+            f"If other instances of the same class remain in the image, mentioning that class is acceptable. ")
 
     elif sa_type == 3:
         old_class = sa.get("matched_base_cls_name", sa.get("replaced_cls_name", "UNKNOWN"))
@@ -47,38 +62,6 @@ def build_prompt(row: Dict[str, Any]) -> str:
             f"The transformed caption should reflect the presence of '{new_class}'. "
             f"If other instances of '{old_class}' still remain, it is acceptable for '{old_class}' to still be mentioned, "
             f"but the caption should also mention '{new_class}' or a close synonym / near-equivalent term."
-        )
-
-    elif sa_type == 4:
-        target_class = sa.get("matched_base_cls_name", sa.get("target_cls_name", "UNKNOWN"))
-        mr_text = f"LOCAL_SP on target object {target_class}"
-        expected_change_text = (
-            f"An object of class '{target_class}' was locally transformed. "
-            f"Only that object was modified, not the whole image. "
-            f"If the local transformation causes a clear visible semantic change to that object, the transformed caption should reflect it. "
-            f"If the change is only low-level and does not create a meaningful semantic difference, it is acceptable for the caption to remain semantically similar."
-        )
-
-    elif sa_type == 5:
-        target_class = sa.get("matched_base_cls_name", sa.get("target_cls_name", "UNKNOWN"))
-        scale_factor = sa.get("obj_scale_factor", None)
-
-        if scale_factor is not None:
-            if scale_factor > 1.0:
-                scale_text = "became bigger"
-            elif scale_factor < 1.0:
-                scale_text = "became smaller"
-            else:
-                scale_text = "kept the same size"
-        else:
-            scale_text = "changed scale"
-
-        mr_text = f"SCALE_OBJECT target {target_class}"
-        expected_change_text = (
-            f"An object of class '{target_class}' had its size changed in the image. "
-            f"In this case, the object {scale_text}. "
-            f"If this size change is clearly visible and semantically relevant, the transformed caption should reflect it. "
-            f"If the size change is not clearly meaningful at caption level, it is acceptable for the caption to remain semantically similar."
         )
 
     else:
@@ -131,17 +114,17 @@ MR-SPECIFIC JUDGMENT RULES:
   The inserted object is expected to appear in the transformed caption. If it is not mentioned, that is an omission failure.
   Mentioning the inserted object is evidence of correctness, not hallucination.
 - sa_type == 2 (remove):
-  The removed object should disappear from the transformed caption, unless other instances of the same class still remain.
+  One instance of the target class was removed.
+  If the expected remaining instances of that same class after removal are greater than 0,
+  then mentioning that class in the transformed caption can still be correct.
+  Only mark failure if the caption clearly treats the removed instance as still present when the removed instance was unique.
+  The transformed caption does NOT need to explicitly say that something was removed.
+  It is sufficient that the removed instance is no longer described as present.
+  If other instances of the same class remain, a generic mention of that class can still be correct.
 - sa_type == 3 (replace):
   The new replacement object is expected to appear in the transformed caption.
   If the caption only keeps mentioning the old object and ignores the new one, that is a failure.
   Mentioning the new object is not hallucination.
-- sa_type == 4 (local object transformation):
-  If a clear visible semantic change happened to the target object, the transformed caption should reflect it.
-  If no meaningful semantic change is visible at caption level, keeping similar meaning is acceptable.
-- sa_type == 5 (object scale change):
-  If a clear and meaningful size change is visible, the transformed caption should reflect it.
-  If the size change is not semantically important at caption level, keeping similar meaning is acceptable.
 
 FAILURE TYPES:
 - omission: an expected object/change is missing from the transformed caption
@@ -175,7 +158,9 @@ Base image detected object classes:
 - {base_object_classes}
 
 Base-image detections:
-{detections_list}
+{base_dets}
+
+{removal_evidence_text}
 
 Allowed newly appearing object class under this MR:
 - {allowed_new_class if allowed_new_class is not None else "none"}
@@ -203,7 +188,7 @@ Return exactly this JSON schema:
 """.strip()
 
     return prompt
-'''
+
 def call_hf(model_url: str, api_key: str, prompt: str, model_id: str) -> Dict[str, Any]:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {"model": model_id, "messages": [{"role": "user", "content": prompt}], "temperature": 0.0, "max_tokens": 220}
@@ -218,9 +203,9 @@ def call_hf(model_url: str, api_key: str, prompt: str, model_id: str) -> Dict[st
         return json.loads(text[s:e+1])
     except Exception:
         return {"score_1_to_5": 3, "is_failure": None, "failure_types": [], "explanation": "Invalid JSON"}
+
+
 '''
-
-
 def call_hf(model_url: str, api_key: str, prompt: str, model_id: str) -> Dict[str, Any]:
     print(f"LLM used: {model_id}")
 
@@ -263,7 +248,7 @@ def call_hf(model_url: str, api_key: str, prompt: str, model_id: str) -> Dict[st
             "failure_types": [],
             "explanation": "Invalid JSON"
         }
-
+'''
 
 
 def judge_score_row(row: Dict[str, Any], llm_cfg: Dict[str, Any]) -> Tuple[float, float, Dict[str, Any]]:
@@ -272,13 +257,13 @@ def judge_score_row(row: Dict[str, Any], llm_cfg: Dict[str, Any]) -> Tuple[float
     model_id = llm_cfg.get("judge_model", "meta-llama/Llama-3.1-8B-Instruct")
     print("LLM used:", model_id)
     prompt = build_prompt(row)
-    #out = call_hf(model_url, api_key, prompt, model_id)
-    out = call_hf(
+    out = call_hf(model_url, api_key, prompt, model_id)
+    '''out = call_hf(
         model_url="https://router.huggingface.co/v1/chat/completions",
         api_key=api_key,
         prompt=prompt,
-        model_id="google/gemma-2-27b-it"
-    )
+        model_id="google/gemma-3-27b-it"
+    )'''
     
     score = float(out.get("score_1_to_5", 3))
     score = max(1.0, min(5.0, score)) # clamp to [1,5] in case of invalid LLM outputs
