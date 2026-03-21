@@ -1,52 +1,87 @@
-# Models/vlm_runner.py
+import base64
 import re
-import pexpect
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import requests
 
 CAPTION_PROMPT = "Describe this image in one sentence."
 
 
 class VLMRunner:
-    def __init__(self, model_name: str, vlm_root: str, python_cmd: str):
-        """
-        model_name: e.g. "llava_v15"
-        vlm_root: path to VLM repo (here LLaVA), e.g. "/home/ubuntu/LLaVA"
-        python_cmd: python executable of llava env,
-                    e.g. "/home/ubuntu/miniconda3/envs/llava/bin/python"
-        """
+    def __init__(
+        self,
+        model_name: str,
+        backend: str = "api",
+        vlm_root: Optional[str] = None,
+        python_cmd: Optional[str] = None,
+        worker_url: Optional[str] = None,
+        generation: Optional[Dict[str, Any]] = None,
+        request_timeout: int = 300,
+    ):
         self.model_name = model_name
-        self.vlm_root = vlm_root 
+        self.backend = backend
+        self.vlm_root = vlm_root
         self.python_cmd = python_cmd
+        self.worker_url = worker_url
+        self.request_timeout = request_timeout
+        self.generation = generation or {
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "max_new_tokens": 128,
+        }
 
-    def _build_cmd(self, image_path: str) -> str:
-        if self.model_name == "llava_v15":
-            return (
-                f'cd {self.vlm_root} && '
-                f'{self.python_cmd} -m llava.serve.cli '
-                f'--model-path liuhaotian/llava-v1.5-7b '
-                f'--image-file "{image_path}" '
-                f'--load-4bit'
-            )
-        raise ValueError(f"Unknown VLM model: {self.model_name}")
+        if self.backend != "api":
+            raise ValueError("This runner now expects backend='api'")
+
+        if not self.worker_url:
+            raise ValueError("worker_url is required when backend='api'")
+
+    def _encode_image_base64(self, image_path: str) -> str:
+        return base64.b64encode(Path(image_path).read_bytes()).decode("utf-8")
+
+    def _extract_text_from_response(self, data: Any) -> str:
+        if isinstance(data, dict):
+            if "text" in data and isinstance(data["text"], str):
+                return data["text"].strip()
+
+            if "output" in data and isinstance(data["output"], str):
+                return data["output"].strip()
+
+            if "response" in data and isinstance(data["response"], str):
+                return data["response"].strip()
+
+            if "detail" in data:
+                raise ValueError(str(data["detail"]))
+
+        if isinstance(data, str):
+            return data.strip()
+
+        raise ValueError(f"Unexpected worker response: {data}")
 
     def caption(self, image_path: str, prompt: str = CAPTION_PROMPT) -> str:
-        cmd = self._build_cmd(image_path)
-        child = pexpect.spawn('/bin/bash', ['-lc', cmd], encoding='utf-8', timeout=600)
+        payload = {
+            "model": self.model_name,
+            "prompt": prompt,
+            "images": [self._encode_image_base64(image_path)],
+            "temperature": self.generation.get("temperature", 0.2),
+            "top_p": self.generation.get("top_p", 0.9),
+            "max_new_tokens": self.generation.get("max_new_tokens", 128),
+        }
 
-        # Wait for model prompt
-        child.expect_exact('USER:')
-        child.sendline(prompt)
-
-        # Read assistant answer
-        child.expect_exact('ASSISTANT:')
-        child.expect_exact('USER:')   # next turn
-
-        ans = child.before.strip()
-        ans = re.sub(r'^\s*ASSISTANT:\s*', '', ans).strip()
+        resp = requests.post(
+            self.worker_url,
+            json=payload,
+            timeout=self.request_timeout,
+        )
+        resp.raise_for_status()
 
         try:
-            child.sendline('exit')
-            child.close()
+            data = resp.json()
         except Exception:
-            pass
+            text = resp.text.strip()
+            return re.sub(r"^\s*ASSISTANT:\s*", "", text).strip()
 
-        return ans
+        text = self._extract_text_from_response(data)
+        text = re.sub(r"^\s*ASSISTANT:\s*", "", text).strip()
+        return text

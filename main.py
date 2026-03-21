@@ -40,13 +40,13 @@ def main(cfg_path: str):
         image_id = sample.get("image_id")
         
         sts = STSScorer(cfg["sts"]["model_name"])
-        vlm = VLMRunner(
+        vlm_runner = VLMRunner(
             model_name=cfg["vlm"]["model_name"],
-            vlm_root=cfg["vlm"]["vlm_root"],
-            python_cmd=cfg["vlm"]["python_cmd"],
-            script_path=cfg["vlm"].get("script_path"),
+            backend=cfg["vlm"]["backend"],
+            worker_url=cfg["vlm"].get("worker_url"),
+            api_model_name=cfg["vlm"].get("api_model_name"),
+            generation=cfg["vlm"].get("generation", {}),
         )
-        
         
         yolo = YOLODetector(model_path="yolov8l.pt", conf_thres=cfg["thresholds"].get("yolo_conf", 0.25))
         sam_segmenter = SAMSegmenter(
@@ -70,7 +70,7 @@ def main(cfg_path: str):
             cfg=cfg,
             base_image_path=base_image_path,
             image_id=image_id,
-            vlm_runner=vlm,
+            vlm_runner=vlm_runner,
             sts_scorer=sts,
             yolo_detector=yolo,
             sam_segmenter=sam_segmenter,

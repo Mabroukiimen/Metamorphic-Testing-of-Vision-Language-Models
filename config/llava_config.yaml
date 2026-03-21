@@ -1,9 +1,13 @@
 vlm:
   model_name: "llava_v15"
-  backend: "cli"
-  vlm_root: "/home/ubuntu/LLaVA"
-  python_cmd: "/home/ubuntu/miniconda3/envs/llava/bin/python"
+  api_model_name: "llava-v1.5-7b"
+  backend: "api"
+  worker_url: "http://127.0.0.1:40000/worker_generate_stream"
   caption_prompt: "Describe this image in one sentence."
+  generation:
+    temperature: 0.2
+    top_p: 0.9
+    max_new_tokens: 128
 
 sts:
   model_name: "sentence-transformers/all-MiniLM-L6-v2"
@@ -25,7 +29,7 @@ pso:
   debug: true
 
 ga:
-  population_size: 100
+  population_size: 10
   max_num_iteration: 10
   mutation_probability: 0.2
   elit_ratio: 0.05

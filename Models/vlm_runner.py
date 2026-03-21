@@ -1,73 +1,82 @@
-# Models/vlm_runner.py
-import subprocess
+import base64
+import json
+import re
 from pathlib import Path
+from typing import Dict, Optional
 
+import requests
 
 CAPTION_PROMPT = "Describe this image in one sentence."
 
 
 class VLMRunner:
-    def __init__(self, model_name: str, vlm_root: str, python_cmd: str, script_path: str = None):
+    def __init__(
+        self,
+        model_name: str,
+        backend: str = "api",
+        worker_url: Optional[str] = None,
+        api_model_name: Optional[str] = None,
+        generation: Optional[Dict] = None,
+        request_timeout: int = 300,
+    ):
         self.model_name = model_name
-        self.vlm_root = vlm_root
-        self.python_cmd = python_cmd
-        self.script_path = script_path
+        self.backend = backend
+        self.worker_url = worker_url
+        self.api_model_name = api_model_name or model_name
+        self.request_timeout = request_timeout
+        self.generation = generation or {
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "max_new_tokens": 128,
+        }
+
+        if self.backend != "api":
+            raise ValueError("Expected backend='api'")
+        if not self.worker_url:
+            raise ValueError("worker_url is required")
+
+    def _encode_image_base64(self, image_path: str) -> str:
+        return base64.b64encode(Path(image_path).read_bytes()).decode("utf-8")
+
+    def _clean_text(self, text: str, prompt: str) -> str:
+        text = text.strip()
+
+        prefix = f"<image>\n{prompt}".strip()
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+
+        text = re.sub(r"^\s*ASSISTANT:\s*", "", text).strip()
+        return text
 
     def caption(self, image_path: str, prompt: str = CAPTION_PROMPT) -> str:
-        if self.model_name == "llava_v15":
-            return self._caption_llava(image_path, prompt)
+        payload = {
+            "model": self.api_model_name,
+            "prompt": f"<image>\n{prompt}",
+            "images": [self._encode_image_base64(image_path)],
+            "temperature": self.generation.get("temperature", 0.2),
+            "top_p": self.generation.get("top_p", 0.9),
+            "max_new_tokens": self.generation.get("max_new_tokens", 128),
+            "stop": "</s>",
+        }
 
-        if self.model_name == "blip_salesforce":
-            return self._caption_blip(image_path, prompt)
-
-        raise ValueError(f"Unknown VLM model: {self.model_name}")
-
-    def _caption_llava(self, image_path: str, prompt: str) -> str:
-        import re
-        import pexpect
-
-        cmd = (
-            f'cd {self.vlm_root} && '
-            f'{self.python_cmd} -m llava.serve.cli '
-            f'--model-path liuhaotian/llava-v1.5-7b '
-            f'--image-file "{image_path}" '
-            f'--load-4bit'
+        resp = requests.post(
+            self.worker_url,
+            json=payload,
+            timeout=self.request_timeout,
+            stream=True,
         )
+        resp.raise_for_status()
 
-        child = pexpect.spawn('/bin/bash', ['-lc', cmd], encoding='utf-8', timeout=600)
-        child.expect_exact('USER:')
-        child.sendline(prompt)
-        child.expect_exact('ASSISTANT:')
-        child.expect_exact('USER:')
-        ans = child.before.strip()
-        ans = re.sub(r'^\s*ASSISTANT:\s*', '', ans).strip()
+        last_obj = None
+        for chunk in resp.iter_lines(decode_unicode=False, delimiter=b"\0"):
+            if not chunk:
+                continue
+            last_obj = json.loads(chunk.decode("utf-8"))
 
-        try:
-            child.sendline('exit')
-            child.close()
-        except Exception:
-            pass
+        if last_obj is None:
+            raise RuntimeError("Empty response from LLaVA worker")
 
-        return ans
+        if last_obj.get("error_code", 0) != 0:
+            raise RuntimeError(f"LLaVA worker error: {last_obj}")
 
-    def _caption_blip(self, image_path: str, prompt: str) -> str:
-        if not self.script_path:
-            raise ValueError("script_path must be set for blip_salesforce")
-
-        cmd = [
-            self.python_cmd,
-            self.script_path,
-            "--image", str(image_path),
-            "--prompt", str(prompt),
-        ]
-
-        result = subprocess.run(
-            cmd,
-            cwd=self.vlm_root,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            check=True,
-        )
-
-        return result.stdout.strip()
+        return self._clean_text(last_obj["text"], prompt)
